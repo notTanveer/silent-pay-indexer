@@ -147,3 +147,54 @@ export const varIntSize = (value: number): number => {
     else if (value <= 0xffffffff) return 5;
     else return 9;
 };
+
+export const readVarInt = (data: Buffer, cursor: number): number => {
+    const firstByte = data.readUInt8(cursor);
+    if (firstByte < 0xfd) {
+        return firstByte;
+    } else if (firstByte === 0xfd) {
+        return data.readUInt16LE(cursor + 1);
+    } else if (firstByte === 0xfe) {
+        return data.readUInt32LE(cursor + 1);
+    } else {
+        return Number(data.readBigUInt64LE(cursor + 1));
+    }
+};
+
+export const parseSilentBlock = (data: Buffer) => {
+    const type = data.readUInt8(0);
+    const transactions = [];
+
+    let cursor = 1;
+    const count = readVarInt(data, cursor);
+    cursor += varIntSize(count);
+
+    for (let i = 0; i < count; i++) {
+        const txid = data.subarray(cursor, cursor + 32).toString('hex');
+        cursor += 32;
+
+        const outputs = [];
+        const outputCount = readVarInt(data, cursor);
+        cursor += varIntSize(outputCount);
+
+        for (let j = 0; j < outputCount; j++) {
+            const value = Number(data.readBigUInt64BE(cursor));
+            cursor += 8;
+
+            const pubkey = data.subarray(cursor, cursor + 32).toString('hex');
+            cursor += 32;
+
+            const vout = data.readUint32BE(cursor);
+            cursor += 4;
+
+            outputs.push({ value, pubkey, vout });
+        }
+
+        const scanTweak = data.subarray(cursor, cursor + 33).toString('hex');
+        cursor += 33;
+
+        transactions.push({ txid, outputs, scanTweak });
+    }
+
+    return { type, transactions };
+};
