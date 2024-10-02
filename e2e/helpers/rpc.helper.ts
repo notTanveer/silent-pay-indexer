@@ -7,17 +7,21 @@ export class BitcoinRPCUtil {
     private readonly axiosConfig: AxiosRequestConfig;
 
     constructor(configPath = './config/e2e.config.yaml') {
-        const config = yaml.load(readFileSync(configPath, 'utf8')) as Record<string, any>;
+        const config = yaml.load(readFileSync(configPath, 'utf8')) as Record<
+            string,
+            any
+        >;
         const user = config.bitcoinCore.rpcUser;
         const password = config.bitcoinCore.rpcPass;
         const host = config.bitcoinCore.rpcHost;
         const port = config.bitcoinCore.rpcPort;
         const protocol = config.bitcoinCore.protocol;
-        this.url = `${protocol}://${user}:${password}@${host}:${port}/`;
+        this.url = `${protocol}://${host}:${port}/`;
         this.axiosConfig = {
             method: 'POST',
-            headers: {
-                'content-type': 'application/json',
+            auth: {
+                username: user,
+                password: password,
             },
         };
     }
@@ -31,13 +35,18 @@ export class BitcoinRPCUtil {
             });
             return response.data?.result;
         } catch (error) {
-            throw new Error(`Request failed with status code ${error.response.status}`);
+            console.log(error.response);
+            throw new Error(
+                `Request failed with status code ${error.response.status}`,
+            );
         }
     }
 
     async getBlockHeight(): Promise<number> {
         return await this.request({
             data: {
+                jsonrpc: '1.0',
+                id: 'silent_payment_indexer',
                 method: 'getblockcount',
                 params: [],
             },
@@ -49,6 +58,8 @@ export class BitcoinRPCUtil {
             data: {
                 method: 'createwallet',
                 params: [walletName],
+                jsonrpc: '1.0',
+                id: 'silent_payment_indexer',
             },
         });
     }
@@ -58,6 +69,8 @@ export class BitcoinRPCUtil {
             data: {
                 method: 'loadwallet',
                 params: [walletName],
+                jsonrpc: '1.0',
+                id: 'silent_payment_indexer',
             },
         });
     }
@@ -67,6 +80,8 @@ export class BitcoinRPCUtil {
             data: {
                 method: 'getnewaddress',
                 params: [],
+                jsonrpc: '1.0',
+                id: 'silent_payment_indexer',
             },
         });
     }
@@ -80,7 +95,7 @@ export class BitcoinRPCUtil {
         });
     }
 
-    async sendToAddress(address: string, amount: number): Promise<any> {
+    async sendToAddress(address: string, amount: number): Promise<string> {
         return await this.request({
             data: {
                 method: 'sendtoaddress',

@@ -1,9 +1,17 @@
 import { randomBytes } from 'crypto';
-import { mnemonicToSeedSync, generateMnemonic } from 'bip39';
+import { mnemonicToSeedSync } from 'bip39';
 import { BIP32Factory } from 'bip32';
 import * as ecc from 'tiny-secp256k1';
-import { payments, Psbt } from 'bitcoinjs-lib';
+import {
+    initEccLib,
+    payments,
+    Psbt,
+    networks,
+    Payment,
+    Transaction,
+} from 'bitcoinjs-lib';
 
+initEccLib(ecc);
 const bip32 = BIP32Factory(ecc);
 
 export class WalletHelper {
@@ -11,47 +19,56 @@ export class WalletHelper {
     private seed: Buffer;
     private root: any;
 
-    constructor(mnemonic: string = 'test test test test test test test test test test test test') {
+    constructor(
+        mnemonic = 'select approve zebra athlete happy whisper parrot will yellow fortune demand father',
+    ) {
         this.mnemonic = mnemonic;
         this.seed = mnemonicToSeedSync(this.mnemonic);
-        this.root = bip32.fromSeed(this.seed);
+        this.root = bip32.fromSeed(this.seed, networks.regtest);
     }
 
     getMnemonic(): string {
         return this.mnemonic;
     }
 
-    generateAddresses(count: number, type: 'p2wpkh' | 'p2wsh' | 'p2tr'): string[] {
-        const addresses: string[] = [];
+    generateAddresses(
+        count: number,
+        type: 'p2wpkh' | 'p2wsh' | 'p2tr',
+    ): Payment[] {
+        const outputs: Payment[] = [];
         for (let i = 0; i < count; i++) {
             const path = `m/84'/0'/0'/0/${i}`;
             const child = this.root.derivePath(path);
-            let address: string;
+            let output;
 
             switch (type) {
                 case 'p2wpkh':
-                    address = payments.p2wpkh({ pubkey: child.publicKey }).address!;
-                    break;
-                case 'p2wsh':
-                    address = payments.p2wsh({
-                        redeem: payments.p2ms({ m: 2, pubkeys: [child.publicKey, randomBytes(33)] }),
-                    }).address!;
+                    output = payments.p2wpkh({
+                        pubkey: child.publicKey,
+                        network: networks.regtest,
+                    });
                     break;
                 case 'p2tr':
-                    address = payments.p2tr({
-                        internalPubkey: child.publicKey.slice(1, 33),
-                    }).address!;
+                    // const sendInternalKey = bip32.fromSeed(
+                    //     rng(64),
+                    //     networks.regtest,
+                    // );
+                    // const sendPubKey = toXOnly(sendInternalKey.publicKey);
+                    output = payments.p2tr({
+                        internalPubkey: toXOnly(child.publicKey),
+                        network: networks.regtest,
+                    });
                     break;
                 default:
                     throw new Error('Unsupported address type');
             }
 
-            addresses.push(address);
+            outputs.push(output);
         }
-        return addresses;
+        return outputs;
     }
 
-    createWallet(): { mnemonic: string; addresses: string[] } {
+    createWallet(): { mnemonic: string; addresses: Payment[] } {
         const addresses = this.generateAddresses(10, 'p2wpkh');
         return { mnemonic: this.mnemonic, addresses };
     }
@@ -65,12 +82,17 @@ export class WalletHelper {
      * @returns {string} The raw signed transaction hex.
      */
     craftTransaction(
-        utxos: Array<{ txid: string; vout: number; value: number; rawTx: string }>,
-        taprootAddress: string
-    ): string {
-        const psbt = new Psbt();
+        utxos: Array<{
+            txid: string;
+            vout: number;
+            value: number;
+            rawTx: string;
+        }>,
+        taprootOutput: Payment,
+    ): Transaction {
+        const psbt = new Psbt({ network: networks.regtest });
 
-        utxos.forEach((utxo, index) => {
+        utxos.forEach((utxo) => {
             psbt.addInput({
                 hash: utxo.txid,
                 index: utxo.vout,
@@ -79,17 +101,25 @@ export class WalletHelper {
         });
 
         // Add the output to the Taproot address (6 BTC)
-        const totalInputValue = utxos.reduce((acc, utxo) => acc + utxo.value, 0);
-        const outputValue = 6 * 1e8; 
-        const fee = 1 * 1e8; 
+        const totalInputValue = utxos.reduce(
+            (acc, utxo) => acc + utxo.value,
+            0,
+        );
+        const outputValue = 5.999 * 1e8;
+        const fee = 0.001 * 1e8;
 
         if (totalInputValue < outputValue + fee) {
             throw new Error('Insufficient funds');
         }
 
+        console.log(taprootOutput.pubkey);
+        console.log(taprootOutput.internalPubkey);
+        console.log(taprootOutput.address);
+
         psbt.addOutput({
-            address: taprootAddress,
-            value: BigInt(outputValue), 
+            address: taprootOutput.address,
+            tapInternalKey: taprootOutput.internalPubkey,
+            value: BigInt(outputValue),
         });
 
         // Sign the inputs with the corresponding private keys
@@ -101,7 +131,9 @@ export class WalletHelper {
 
         psbt.finalizeAllInputs();
 
-        const rawTx = psbt.extractTransaction().toHex();
-        return rawTx;
+        return psbt.extractTransaction(true);
     }
 }
+
+const toXOnly = (pubKey) =>
+    pubKey.length === 32 ? pubKey : pubKey.slice(1, 33);
