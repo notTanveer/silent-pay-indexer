@@ -112,11 +112,7 @@ export class IndexerService {
         blockHeight: number,
         blockHash: string,
     ) {
-        console.log(computeScantweak.toString());
-
         const scanResult = computeScantweak(txid, vin, vout);
-        console.log(vin);
-        console.log(vout);
         if (scanResult) {
             const [scanTweak, eligibleOutputPubKeys] = scanResult;
             const transaction = new Transaction();
