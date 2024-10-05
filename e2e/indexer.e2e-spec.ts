@@ -2,24 +2,42 @@ import { WalletHelper } from '@e2e/helpers/wallet.helper';
 import { BitcoinRPCUtil } from '@e2e/helpers/rpc.helper';
 import { ApiHelper } from '@e2e/helpers/api.helper';
 import { parseSilentBlock } from '@/common/common';
-import { Payment } from 'bitcoinjs-lib';
+import { Payment, Transaction } from 'bitcoinjs-lib';
+import { computeScantweak } from '@/indexer/indexer.service';
 
-function hexStringToBuffer(hexString: string): Buffer {
-    if (hexString.length % 2 !== 0) {
-        throw new Error('Hex string length must be even');
-    }
 
-    const buffer = Buffer.alloc(hexString.length / 2);
+function generateScantweak(
+    transaction: Transaction,
+    outputs: Payment[],
+): string {
+    const txid = transaction.getId();
+    const txin = transaction.ins.map((input, index) => {
+        return {
+            txid: Buffer.from(input.hash).reverse().toString('hex'),
+            vout: input.index,
+            scriptSig: transaction.hasWitnesses()
+                ? ''
+                : Buffer.from(input.script).toString('hex'),
+            witness: transaction.hasWitnesses()
+                ? input.witness.map((v) => Buffer.from(v).toString('hex'))
+                : undefined,
+            prevOutScript: Buffer.from(outputs[index].output).toString('hex'),
+        };
+    });
 
-    for (let i = 0; i < hexString.length; i += 2) {
-        const byte = parseInt(hexString.substring(i, i + 2), 16);
-        if (isNaN(byte)) {
-            throw new Error('Invalid hex character at index ' + i);
-        }
-        buffer[i / 2] = byte;
-    }
+    console.log(txin);
+    const txout = transaction.outs.map((output) => {
+        return {
+            scriptPubKey: Buffer.from(output.script).toString('hex'),
+            value: Number(output.value),
+        };
+    });
 
-    return buffer;
+    console.log(txout);
+
+    const scantweak = computeScantweak(txid, txin, txout)[0];
+
+    return scantweak.toString('hex');
 }
 
 describe('WalletHelper Integration Tests', () => {
@@ -35,22 +53,29 @@ describe('WalletHelper Integration Tests', () => {
         walletHelper = new WalletHelper();
         bitcoinRPCUtil = new BitcoinRPCUtil();
         apiHelper = new ApiHelper();
+
         // await bitcoinRPCUtil.createWallet('test_wallet1');
         initialAddress = await bitcoinRPCUtil.getNewAddress();
         taprootOutput = walletHelper.generateAddresses(1, 'p2tr')[0];
-        p2wkhOutputs = walletHelper.generateAddresses(8, 'p2wpkh');
+        p2wkhOutputs = walletHelper.generateAddresses(6, 'p2wpkh');
         await bitcoinRPCUtil.mineToAddress(101, initialAddress);
+
         const txidList = [];
         for (const output of p2wkhOutputs) {
             const txid = await bitcoinRPCUtil.sendToAddress(output.address, 1);
             txidList.push(txid);
         }
         await bitcoinRPCUtil.mineToAddress(6, initialAddress);
+
         utxos = [];
         for (let i = 0; i < 6; i++) {
             for (let vout = 0; vout < 2; vout++) {
                 const utxo = await bitcoinRPCUtil.getTxOut(txidList[i], vout);
-                if (utxo && Math.round(utxo.value * 1e8) === 1e8) {
+                console.log("this is utxo", utxo);
+                if (
+                    utxo &&
+                    utxo.scriptPubKey.address === p2wkhOutputs[i].address
+                ) {
                     utxos.push({
                         txid: txidList[i],
                         vout: vout,
@@ -113,10 +138,7 @@ describe('WalletHelper Integration Tests', () => {
 
         expect(output.pubkey).toEqual(hexString);
 
-        const silentBlock1 =
-            '00014c916159adfc0aaaa5e2ae2ba282ddf12fef1921ec240440fcced03dd57d9e0f010000000023c1bf60941d9510ebc20627ca01f05e0eaa53a744bc4877b064deb30c970a7ddfa84fbb0000000002e2b27bcfbccf8db4c82186429b2dd779eca2818b308b88788106bb714bdc99b3';
-        const decodedBlock1 = parseSilentBlock(hexStringToBuffer(silentBlock1));
-        console.log("decodedBlock => ", decodedBlock1);
-
+        const scantweak = generateScantweak(transaction, p2wkhOutputs);
+        expect(foundTx.scanTweak).toEqual(scantweak);
     });
 });

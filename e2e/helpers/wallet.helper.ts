@@ -1,4 +1,3 @@
-import { randomBytes } from 'crypto';
 import { mnemonicToSeedSync } from 'bip39';
 import { BIP32Factory } from 'bip32';
 import * as ecc from 'tiny-secp256k1';
@@ -49,11 +48,6 @@ export class WalletHelper {
                     });
                     break;
                 case 'p2tr':
-                    // const sendInternalKey = bip32.fromSeed(
-                    //     rng(64),
-                    //     networks.regtest,
-                    // );
-                    // const sendPubKey = toXOnly(sendInternalKey.publicKey);
                     output = payments.p2tr({
                         internalPubkey: toXOnly(child.publicKey),
                         network: networks.regtest,
@@ -105,16 +99,14 @@ export class WalletHelper {
             (acc, utxo) => acc + utxo.value,
             0,
         );
-        const outputValue = 5.999 * 1e8;
-        const fee = 0.001 * 1e8;
+
+        const BTC_TO_SATOSHI = 1e8;
+        const outputValue = 5.999 * BTC_TO_SATOSHI;
+        const fee = 0.001 * BTC_TO_SATOSHI;
 
         if (totalInputValue < outputValue + fee) {
             throw new Error('Insufficient funds');
         }
-
-        console.log(taprootOutput.pubkey);
-        console.log(taprootOutput.internalPubkey);
-        console.log(taprootOutput.address);
 
         psbt.addOutput({
             address: taprootOutput.address,

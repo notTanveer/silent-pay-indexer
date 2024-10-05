@@ -22,16 +22,6 @@ export class ApiHelper {
         });
     }
 
-    // async getBuffer<TResponseData = any>(path: string, params?: any) {
-    //     return this.makeRequest<TResponseData>({
-    //         method: 'get',
-    //         url: `${this.baseUrl}${path}`,
-    //         params,
-    //         validateStatus: () => true,
-            
-    //     });
-    // }
-
     private async makeRequest<TResponseData = any, TBody = any>(
         config: AxiosRequestConfig<TBody>,
     ) {

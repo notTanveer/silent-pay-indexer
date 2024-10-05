@@ -2,6 +2,13 @@ import { readFileSync } from 'fs';
 import * as yaml from 'js-yaml';
 import axios, { AxiosRequestConfig } from 'axios';
 
+type PartialUtxo = {
+    value: number;
+    scriptPubKey: {
+        address: string;
+    };
+};
+
 export class BitcoinRPCUtil {
     private readonly url: string;
     private readonly axiosConfig: AxiosRequestConfig;
@@ -35,7 +42,6 @@ export class BitcoinRPCUtil {
             });
             return response.data?.result;
         } catch (error) {
-            console.log(error.response);
             throw new Error(
                 `Request failed with status code ${error.response.status}`,
             );
@@ -75,7 +81,7 @@ export class BitcoinRPCUtil {
         });
     }
 
-    async getNewAddress(): Promise<any> {
+    async getNewAddress(): Promise<string> {
         return await this.request({
             data: {
                 method: 'getnewaddress',
@@ -113,7 +119,7 @@ export class BitcoinRPCUtil {
         });
     }
 
-    async getTxOut(txid: string, vout: number): Promise<any> {
+    async getTxOut(txid: string, vout: number): Promise<PartialUtxo> {
         return await this.request({
             data: {
                 method: 'gettxout',
@@ -127,15 +133,6 @@ export class BitcoinRPCUtil {
             data: {
                 method: 'getrawtransaction',
                 params: [txid],
-            },
-        });
-    }
-
-    async listUnspent(addresses: string[]): Promise<any> {
-        return await this.request({
-            data: {
-                method: 'listunspent',
-                params: [addresses],
             },
         });
     }
