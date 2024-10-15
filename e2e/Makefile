@@ -12,7 +12,7 @@ APP_NAME = silent-indexer
 .PHONY: all up down test wait-for-service clean start-service
 
 # Default target
-all: test clean
+all: test 
 
 # Start Docker Compose services
 up: down
@@ -22,8 +22,9 @@ up: down
 # Stop and remove Docker Compose services
 down:
 	@echo "Stopping and removing Docker Compose services..."
-	docker compose -f $(DOCKER_COMPOSE_FILE) down
+	docker compose -f $(DOCKER_COMPOSE_FILE) down -v
 	$(PM2_CMD) delete $(APP_NAME) || echo "Warning: PM2 delete command failed, but continuing..."
+	@echo "Clean up completed."
 
 # Start the Indexer service
 start-service:
@@ -52,3 +53,5 @@ test: up start-service wait-for-service
 # Clean up
 clean: down
 	@echo "Clean up completed."
+
+all: | down
