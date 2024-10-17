@@ -1,38 +1,35 @@
 # Variables
 DOCKER_COMPOSE_FILE = helpers/docker/docker-compose.yml
 NESTJS_SERVICE_PORT = 3000
-NESTJS_TEST_CMD = npm run test:e2e 
+INDEXER_TEST_CMD = npm run test:e2e 
 MAX_RETRIES = 10 # Number of retries to check if the inddexer service is up
 RETRY_INTERVAL = 5 # Seconds between retries
-PM2_CMD = pm2
+PM2_CMD = npx pm2
 NPM_CMD = npm
 APP_NAME = silent-indexer
+LOG_DIR = .logs
+INDEXER_OUTPUT_LOG = $(LOG_DIR)/$(APP_NAME)-out.log
+INDEXER_ERROR_LOG = $(LOG_DIR)/$(APP_NAME)-error.log
 
 # Targets
-.PHONY: all up down test wait-for-service clean start-service
+.PHONY: all start-bitcoind start-indexer setup test clean 
 
 # Default target
-all: test 
+all: setup test
+	@$(MAKE) clean
 
 # Start Docker Compose services
-up: down
+start-bitcoind:
 	@echo "Starting Docker Compose services..."
 	docker compose -f $(DOCKER_COMPOSE_FILE) up -d
 
-# Stop and remove Docker Compose services
-down:
-	@echo "Stopping and removing Docker Compose services..."
-	docker compose -f $(DOCKER_COMPOSE_FILE) down -v
-	$(PM2_CMD) delete $(APP_NAME) || echo "Warning: PM2 delete command failed, but continuing..."
-	@echo "Clean up completed."
-
 # Start the Indexer service
-start-service:
+start-indexer: 
 	@echo "Starting the Indexer service with PM2..."
-	$(PM2_CMD) start $(NPM_CMD) --name $(APP_NAME) -- run start:e2e
+	$(PM2_CMD) start $(NPM_CMD) --name $(APP_NAME) --output $(INDEXER_OUTPUT_LOG) --error $(INDEXER_ERROR_LOG) -- run start:e2e 
 
 # Wait for the Indexer service to be available before running tests
-wait-for-service:
+setup: start-bitcoind start-indexer
 	@echo "Waiting for Indexer service to be ready on port $(NESTJS_SERVICE_PORT)..."
 	@count=0; \
 	while ! nc -z localhost $(NESTJS_SERVICE_PORT) && [ $$count -lt $(MAX_RETRIES) ]; do \
@@ -46,12 +43,13 @@ wait-for-service:
 	fi
 
 # Run the end-to-end tests
-test: up start-service wait-for-service
+test: 
 	@echo "Running end-to-end tests..."
-	$(NESTJS_TEST_CMD)
+	$(INDEXER_TEST_CMD)
 
-# Clean up
-clean: down
+# Stop all services and delete all files
+clean:
+	@echo "Stopping and removing Docker Compose services..."
+	docker compose -f $(DOCKER_COMPOSE_FILE) down -v
+	$(PM2_CMD) delete $(APP_NAME) || echo "Warning: PM2 delete command failed, but continuing..."
 	@echo "Clean up completed."
-
-all: | down
