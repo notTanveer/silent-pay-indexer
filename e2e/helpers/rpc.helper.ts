@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs';
 import * as yaml from 'js-yaml';
 import axios, { AxiosRequestConfig } from 'axios';
+import { setTimeout } from 'timers/promises';
 
 type PartialUtxo = {
     value: number;
@@ -32,6 +33,17 @@ export class BitcoinRPCUtil {
         };
     }
 
+    public async waitForBitcoind(): Promise<void> {
+        while (true) {
+            try {
+                await this.getBlockchainInfo();
+                break;
+            } catch (error) {
+                await setTimeout(2000);
+            }
+        }
+    }
+
     public async request(config: AxiosRequestConfig): Promise<any> {
         try {
             const response = await axios.request({
@@ -60,10 +72,28 @@ export class BitcoinRPCUtil {
         });
     }
 
+    loadWallet(walletName: string): Promise<any> {
+        return this.request({
+            data: {
+                method: 'createwallet',
+                params: [walletName],
+            },
+        });
+    }
+
     getNewAddress(): Promise<string> {
         return this.request({
             data: {
                 method: 'getnewaddress',
+                params: [],
+            },
+        });
+    }
+
+    getBlockchainInfo(): Promise<string> {
+        return this.request({
+            data: {
+                method: 'getblockchaininfo',
                 params: [],
             },
         });
