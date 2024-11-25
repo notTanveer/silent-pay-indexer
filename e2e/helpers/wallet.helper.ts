@@ -44,6 +44,7 @@ export class WalletHelper {
     private lastAcceptableBlock = 209_999;
     private spendableAddress: string;
     public currentBlockCount = 0;
+    private masterFingerprint: Buffer;
     constructor() {
         this.root = fromSeed(randomBytes(64), networks.regtest);
         this.bitcoinRPCUtil = new BitcoinRPCUtil();
