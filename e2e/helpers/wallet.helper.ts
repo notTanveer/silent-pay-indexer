@@ -39,9 +39,11 @@ export class WalletHelper {
     private lastAcceptableBlock = 209_999;
     private spendableAddress: string;
     public currentBlockCount = 0;
+    private masterFingerprint: Buffer;
     constructor() {
         this.root = fromSeed(randomBytes(64), networks.regtest);
         this.bitcoinRPCUtil = new BitcoinRPCUtil();
+        this.masterFingerprint = this.root.fingerprint;
     }
 
     async initializeSpendableAmount() {
@@ -228,7 +230,26 @@ export class WalletHelper {
             const keyPair = this.root.derivePath(
                 getDerivationPath(utxo.addressType, utxo.index),
             );
-            psbt.signInput(index, keyPair);
+
+            if (utxo.addressType === AddressType.P2TR) {
+                psbt.updateInput(index, {
+                    tapInternalKey: keyPair.publicKey.subarray(1),
+                    tapBip32Derivation: [
+                        {
+                            masterFingerprint: this.masterFingerprint,
+                            pubkey: keyPair.publicKey,
+                            path: getDerivationPath(
+                                utxo.addressType,
+                                utxo.index,
+                            ),
+                            leafHashes: [keyPair.publicKey.subarray(1)],
+                        },
+                    ],
+                });
+                psbt.signInput(index, keyPair);
+            } else {
+                psbt.signInput(index, keyPair);
+            }
         });
 
         psbt.finalizeAllInputs();
