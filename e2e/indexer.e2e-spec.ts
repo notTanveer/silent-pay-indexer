@@ -30,6 +30,7 @@ describe('Indexer', () => {
         AddressType.P2WPKH,
         AddressType.P2SH_P2WPKH,
         AddressType.P2PKH,
+        AddressType.P2TR,
     ];
 
     addressTypes.forEach((addressType) => {

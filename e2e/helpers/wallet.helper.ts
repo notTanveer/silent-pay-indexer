@@ -7,14 +7,19 @@ import {
     networks,
     Payment,
     Transaction,
+    crypto,
 } from 'bitcoinjs-lib';
 import { btcToSats } from '@e2e/helpers/common.helper';
 import { randomBytes } from 'crypto';
 import { toXOnly } from 'bitcoinjs-lib/src/psbt/bip371';
 import { BitcoinRPCUtil } from '@e2e/helpers/rpc.helper';
 import { assert } from 'console';
+import * as ecpair from 'ecpair';
 
 initEccLib(ecc);
+
+// Configure the ECPair factory with tiny-secp256k1
+const ECPair = ecpair.ECPairFactory(ecc);
 
 export enum AddressType {
     P2WPKH = 'p2wpkh',
@@ -42,6 +47,7 @@ export class WalletHelper {
     constructor() {
         this.root = fromSeed(randomBytes(64), networks.regtest);
         this.bitcoinRPCUtil = new BitcoinRPCUtil();
+        initEccLib(ecc);
     }
 
     async initializeSpendableAmount() {
@@ -204,6 +210,7 @@ export class WalletHelper {
                         }).output,
                         value: utxo.value,
                     };
+                    input.tapInternalKey = toXOnly(keyPair.publicKey);
                     break;
             }
             psbt.addInput(input);
@@ -225,9 +232,14 @@ export class WalletHelper {
         });
 
         utxos.forEach((utxo, index) => {
-            const keyPair = this.root.derivePath(
+            let keyPair: any = this.root.derivePath(
                 getDerivationPath(utxo.addressType, utxo.index),
             );
+
+            if (utxo.addressType === AddressType.P2TR) {
+                keyPair = createTaprootKeyPair(keyPair);
+            }
+
             psbt.signInput(index, keyPair);
         });
 
@@ -257,4 +269,20 @@ function getDerivationPath(addressType: AddressType, index: number): string {
         default:
             throw new Error('Unsupported address type');
     }
+}
+
+function createTaprootKeyPair(
+    keyPair: BIP32Interface,
+    network = networks.regtest,
+) {
+    const taprootKeyPair = ECPair.fromPrivateKey(keyPair.privateKey, {
+        compressed: true,
+        network: network,
+    });
+
+    const tweakedTaprootKey = taprootKeyPair.tweak(
+        crypto.taggedHash('TapTweak', toXOnly(keyPair.publicKey)),
+    );
+
+    return tweakedTaprootKey;
 }
