@@ -7,19 +7,31 @@ import {
     networks,
     Payment,
     Transaction,
+    crypto,
 } from 'bitcoinjs-lib';
 import { btcToSats } from '@e2e/helpers/common.helper';
 import { randomBytes } from 'crypto';
 import { toXOnly } from 'bitcoinjs-lib/src/psbt/bip371';
 import { BitcoinRPCUtil } from '@e2e/helpers/rpc.helper';
+import { ECPairFactory } from 'ecpair';
 
 initEccLib(ecc);
+const ECPair = ECPairFactory(ecc);
+
+export enum AddressType {
+    P2WPKH = 'P2WPKH',
+    P2TR = 'P2TR',
+    P2PKH = 'P2PKH',
+    P2SH_P2WPKH = 'P2SH_P2WPKH',
+}
 
 export type UTXO = {
     txid: string;
     vout: number;
     value: number;
     rawTx: string;
+    addressType: AddressType;
+    index: number;
 };
 
 export type SentTransactionDetails = {
@@ -35,6 +47,7 @@ export class WalletHelper {
     constructor() {
         this.root = fromSeed(randomBytes(64), networks.regtest);
         this.bitcoinRPCUtil = new BitcoinRPCUtil();
+        initEccLib(ecc);
     }
 
     async initializeWallet() {
@@ -53,7 +66,7 @@ export class WalletHelper {
         return this.bitcoinRPCUtil.mineToAddress(numOfBlocks, walletAddress);
     }
 
-    async addFundToUTXO(payment: Payment, amount): Promise<UTXO> {
+    async addFundToUTXO(payment: Payment, amount: number, addressType: AddressType, index: number): Promise<UTXO> {
         const txid = await this.bitcoinRPCUtil.sendToAddress(
             payment.address,
             amount,
@@ -71,6 +84,8 @@ export class WalletHelper {
                     vout: vout,
                     value: btcToSats(utxo.value),
                     rawTx: await this.bitcoinRPCUtil.getRawTransaction(txid),
+                    addressType,
+                    index,
                 };
             }
         }
@@ -80,7 +95,7 @@ export class WalletHelper {
         );
     }
 
-    generateAddresses(count: number, type: 'p2wpkh' | 'p2tr'): Payment[] {
+    generateAddresses(count: number, type: AddressType): Payment[] {
         const outputs: Payment[] = [];
         for (let i = 0; i < count; i++) {
             const path = `m/84'/0'/0'/0/${i}`;
@@ -88,15 +103,31 @@ export class WalletHelper {
             let output: Payment;
 
             switch (type) {
-                case 'p2wpkh':
+                case AddressType.P2WPKH:
                     output = payments.p2wpkh({
                         pubkey: child.publicKey,
                         network: networks.regtest,
                     });
                     break;
-                case 'p2tr':
+                case AddressType.P2TR:
                     output = payments.p2tr({
                         internalPubkey: toXOnly(child.publicKey),
+                        network: networks.regtest,
+                    });
+                    break;
+                case AddressType.P2PKH:
+                    output = payments.p2pkh({
+                        pubkey: child.publicKey,
+                        network: networks.regtest,
+                    });
+                    break;
+                case AddressType.P2SH_P2WPKH:
+                    const p2wpkh = payments.p2wpkh({
+                        pubkey: child.publicKey,
+                        network: networks.regtest,
+                    });
+                    output = payments.p2sh({
+                        redeem: p2wpkh,
                         network: networks.regtest,
                     });
                     break;
@@ -111,18 +142,58 @@ export class WalletHelper {
 
     async craftAndSendTransaction(
         utxos: UTXO[],
-        taprootOutput: Payment,
+        output: Payment,
         outputValue: number,
         fee: number,
     ): Promise<SentTransactionDetails> {
         const psbt = new Psbt({ network: networks.regtest });
 
         utxos.forEach((utxo) => {
-            psbt.addInput({
+            const keyPair = this.root.derivePath(getDerivationPath(utxo.addressType, utxo.index));
+            const input: any = {
                 hash: utxo.txid,
                 index: utxo.vout,
-                nonWitnessUtxo: Buffer.from(utxo.rawTx, 'hex'),
-            });
+            };
+            switch (utxo.addressType) {
+                case AddressType.P2SH_P2WPKH:
+                    const p2wpkh = payments.p2wpkh({
+                        pubkey: keyPair.publicKey,
+                        network: networks.regtest,
+                    });
+                    const p2sh = payments.p2sh({
+                        redeem: p2wpkh,
+                        network: networks.regtest,
+                    });
+                    input.witnessUtxo = {
+                        script: p2sh.output,
+                        value: utxo.value,
+                    };
+                    input.redeemScript = p2sh.redeem.output;
+                    break;
+                case AddressType.P2WPKH:
+                    input.witnessUtxo = {
+                        script: payments.p2wpkh({
+                            pubkey: keyPair.publicKey,
+                            network: networks.regtest,
+                        }).output,
+                        value: utxo.value,
+                    };
+                    break;
+                case AddressType.P2PKH:
+                    input.nonWitnessUtxo = Buffer.from(utxo.rawTx, 'hex');
+                    break;
+                case AddressType.P2TR:
+                    input.witnessUtxo = {
+                        script: payments.p2tr({
+                            internalPubkey: toXOnly(keyPair.publicKey),
+                            network: networks.regtest,
+                        }).output,
+                        value: utxo.value,
+                    };
+                    input.tapInternalKey = toXOnly(keyPair.publicKey);
+                    break;
+            }
+            psbt.addInput(input);
         });
 
         const totalInputValue = utxos.reduce(
@@ -135,14 +206,20 @@ export class WalletHelper {
         }
 
         psbt.addOutput({
-            address: taprootOutput.address,
-            tapInternalKey: taprootOutput.internalPubkey,
+            address: output.address,
+            tapInternalKey: output.internalPubkey,
             value: btcToSats(outputValue),
         });
 
         // Sign the inputs with the corresponding private keys
-        utxos.forEach((_, index) => {
-            const keyPair = this.root.derivePath(`m/84'/0'/0'/0/${index}`);
+        utxos.forEach((utxo, index) => {
+            let keyPair: any = this.root.derivePath(
+                getDerivationPath(utxo.addressType, utxo.index),
+            );
+
+            if (utxo.addressType === AddressType.P2TR) {
+                keyPair = createTaprootKeyPair(keyPair);
+            }
             psbt.signInput(index, keyPair);
         });
 
@@ -158,3 +235,35 @@ export class WalletHelper {
         return { transaction, txid, blockhash };
     }
 }
+
+function getDerivationPath(addressType: AddressType, index: number): string {
+    switch (addressType) {
+        case AddressType.P2PKH:
+            return `m/44'/0'/0'/0/${index}`;
+        case AddressType.P2SH_P2WPKH:
+            return `m/49'/0'/0'/0/${index}`;
+        case AddressType.P2WPKH:
+            return `m/84'/0'/0'/0/${index}`;
+        case AddressType.P2TR:
+            return `m/86'/0'/0'/0/${index}`;
+        default:
+            throw new Error('Unsupported address type');
+    }
+}
+
+function createTaprootKeyPair(
+    keyPair: BIP32Interface,
+    network = networks.regtest,
+) {
+    const taprootKeyPair = ECPair.fromPrivateKey(keyPair.privateKey, {
+        compressed: true,
+        network: network,
+    });
+
+    const tweakedTaprootKey = taprootKeyPair.tweak(
+        crypto.taggedHash('TapTweak', toXOnly(keyPair.publicKey)),
+    );
+
+    return tweakedTaprootKey;
+}
+
