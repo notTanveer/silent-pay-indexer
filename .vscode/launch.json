@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "type": "node",
+        "request": "launch",
+        "name": "Launch via NPM",
+        "runtimeExecutable": "npm",
+        "runtimeArgs": [
+          "run",
+          "test:e2e",        // Replace "start" with your script name
+          "--",
+          "--inspect-brk" // Enable debugging and break at start
+        ],
+        "port": 9229,
+        "console": "integratedTerminal"
+      }
+    ]
+  }
+  

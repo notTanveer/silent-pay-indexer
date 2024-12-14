@@ -66,11 +66,18 @@ export class WalletHelper {
         return this.bitcoinRPCUtil.mineToAddress(numOfBlocks, walletAddress);
     }
 
-    async addFundToUTXO(payment: Payment, amount: number, addressType: AddressType, index: number): Promise<UTXO> {
+    async addFundToUTXO(
+        payment: Payment,
+        amount: number,
+        addressType: AddressType,
+        index: number,
+    ): Promise<UTXO> {
         const txid = await this.bitcoinRPCUtil.sendToAddress(
             payment.address,
             amount,
         );
+
+        await this.mineBlock(1);
 
         for (let vout = 0; vout < 2; vout++) {
             const utxo = await this.bitcoinRPCUtil.getTxOut(txid, vout);
@@ -98,8 +105,7 @@ export class WalletHelper {
     generateAddresses(count: number, type: AddressType): Payment[] {
         const outputs: Payment[] = [];
         for (let i = 0; i < count; i++) {
-            const path = `m/84'/0'/0'/0/${i}`;
-            const child = this.root.derivePath(path);
+            const child = this.root.derivePath(getDerivationPath(type, i));
             let output: Payment;
 
             switch (type) {
@@ -149,7 +155,9 @@ export class WalletHelper {
         const psbt = new Psbt({ network: networks.regtest });
 
         utxos.forEach((utxo) => {
-            const keyPair = this.root.derivePath(getDerivationPath(utxo.addressType, utxo.index));
+            const keyPair = this.root.derivePath(
+                getDerivationPath(utxo.addressType, utxo.index),
+            );
             const input: any = {
                 hash: utxo.txid,
                 index: utxo.vout,
@@ -230,6 +238,8 @@ export class WalletHelper {
         const txid = await this.bitcoinRPCUtil.sendRawTransaction(
             transaction.toHex(),
         );
+
+        // console.log(txid.body.error);
         const blockhash = (await this.mineBlock(1))[0];
 
         return { transaction, txid, blockhash };
@@ -266,4 +276,3 @@ function createTaprootKeyPair(
 
     return tweakedTaprootKey;
 }
-

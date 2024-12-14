@@ -22,15 +22,18 @@ describe('Indexer', () => {
     });
 
     const addressTypes = [
+        AddressType.P2SH_P2WPKH,
         AddressType.P2WPKH,
         AddressType.P2TR,
         AddressType.P2PKH,
-        AddressType.P2SH_P2WPKH,
     ];
 
     addressTypes.forEach((addressType) => {
         it(`${addressType} - should ensure that the correct silent block is fetched`, async () => {
-            const taprootOutput = walletHelper.generateAddresses(1, AddressType.P2TR)[0];
+            const taprootOutput = walletHelper.generateAddresses(
+                1,
+                AddressType.P2TR,
+            )[0];
             const outputs = walletHelper.generateAddresses(6, addressType);
             const utxos: UTXO[] = [];
 
