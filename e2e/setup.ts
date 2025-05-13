@@ -14,10 +14,7 @@ async function startBitcoinD(
     const logger = new Logger('Bitcoind');
     let container: Docker.Container;
 
-    const config = yaml.load(readFileSync(configPath, 'utf8')) as Record<
-        string,
-        any
-    >;
+    const config = yaml.load(readFileSync(configPath, 'utf8')) as Record<string, any>;
 
     const user = config.bitcoinCore.rpcUser;
     const password = config.bitcoinCore.rpcPass;
@@ -27,68 +24,126 @@ async function startBitcoinD(
     try {
         const docker = new Docker();
         const imageName = 'btcpayserver/bitcoin:24.0.1-1';
+        const LABEL = 'e2e-test=bitcoind'; // Label to identify test containers
 
-        const images = await docker.listImages();
-        const imageExists = images.some(
-            (image) => image.RepoTags && image.RepoTags.includes(imageName),
+        // Check for existing containers with the same label, image, port, and config
+        const containers = await docker.listContainers({ 
+            all: true,
+            filters: { label: [LABEL] }
+        });
+
+        let existingContainer: Docker.Container | null = null;
+
+        for (const containerInfo of containers) {
+            if (containerInfo.Image !== imageName) continue;
+
+            const portMapped = containerInfo.Ports.some(p => p.PublicPort === port);
+            if (!portMapped) continue;
+
+            const container = docker.getContainer(containerInfo.Id);
+            const details = await container.inspect();
+            const env = details.Config.Env;
+
+            // Check BITCOIN_NETWORK
+            const networkVar = env.find(e => e.startsWith('BITCOIN_NETWORK='));
+            const existingNetwork = networkVar ? networkVar.split('=')[1] : null;
+            if (existingNetwork !== network) continue;
+
+            // Check BITCOIN_EXTRA_ARGS for rpcuser and rpcpassword
+            const extraArgsVar = env.find(e => e.startsWith('BITCOIN_EXTRA_ARGS='));
+            if (!extraArgsVar) continue;
+
+            const extraArgs = extraArgsVar.split('=')[1].replace(/\n/g, ' ');
+            const argsArray = extraArgs.split(' ');
+            const rpcUser = argsArray.find(arg => arg.startsWith('rpcuser='))?.split('=')[1];
+            const rpcPass = argsArray.find(arg => arg.startsWith('rpcpassword='))?.split('=')[1];
+
+            if (rpcUser !== user || rpcPass !== password) continue;
+
+            existingContainer = container;
+            break;
+        }
+
+        if (existingContainer) {
+            const details = await existingContainer.inspect();
+            if (details.State.Running) {
+                logger.log(`Reusing existing running container ${existingContainer.id}`);
+            } else {
+                logger.log(`Starting existing stopped container ${existingContainer.id}`);
+                await existingContainer.start();
+            }
+            // Pipe logs even if reusing container
+            const logs = await existingContainer.logs({
+                follow: true,
+                stdout: true,
+                stderr: true,
+            });
+            logs.pipe(new FileLogger('bitcoind').getWriteStream());
+            return existingContainer;
+        }
+
+        // Remove any other conflicting containers with the same label and port
+        const conflictingContainers = containers.filter(containerInfo => 
+            containerInfo.Ports.some(p => p.PublicPort === port)
         );
 
-        // Pull the image if it's not available
+        for (const containerInfo of conflictingContainers) {
+            const container = docker.getContainer(containerInfo.Id);
+            logger.log(`Removing conflicting container ${containerInfo.Id} on port ${port}`);
+            await container.remove({ force: true, v: true });
+        }
+
+        // Pull image if not exists
+        const images = await docker.listImages();
+        const imageExists = images.some(image => 
+            image.RepoTags?.includes(imageName)
+        );
+
         if (!imageExists) {
-            logger.log(`Image ${imageName} not found locally. Pulling...`);
-            const stream = await docker.pull(imageName);
+            logger.log(`Pulling image ${imageName}`);
             await new Promise((resolve, reject) => {
-                docker.modem.followProgress(stream, (err, output) =>
-                    err ? reject(err) : resolve(output),
-                ),
-                    (event) => logger.log(event.status);
+                docker.pull(imageName, (err, stream) => {
+                    if (err) return reject(err);
+                    docker.modem.followProgress(stream, (err, res) => 
+                        err ? reject(err) : resolve(res)
+                    );
+                });
             });
         }
 
-        // Create and start the container
+        // Create and start new container
         container = await docker.createContainer({
             Image: imageName,
-            ExposedPorts: { [`${port}/tcp`]: {} }, // Expose the Bitcoin RPC and P2P ports
+            Labels: { 'e2e-test': 'bitcoind' },
+            ExposedPorts: { [`${port}/tcp`]: {} },
             HostConfig: {
                 PortBindings: {
-                    [`${port}/tcp`]: [{ HostPort: `${port}` }],
-                },
+                    [`${port}/tcp`]: [{ HostPort: `${port}` }]
+                }
             },
             Env: [
                 `BITCOIN_NETWORK=${network}`,
-                `BITCOIN_EXTRA_ARGS=server=1\n
-                    rest=1\n
-                    rpcbind=0.0.0.0:${port}\n
-                    rpcallowip=0.0.0.0/0\n
-                    rpcuser=${user}\n
-                    rpcpassword=${password}\n
-                    debug=0\n
-                    logips=1\n
-                    logtimemicros=1\n
-                    blockmintxfee=0\n
-                    deprecatedrpc=signrawtransaction\n
-                    listenonion=0\n
-                    fallbackfee=0.00001\n
-                    txindex=1`,
-            ],
+                `BITCOIN_EXTRA_ARGS=server=1\nrest=1\nrpcbind=0.0.0.0:${port}\n` +
+                `rpcallowip=0.0.0.0/0\nrpcuser=${user}\nrpcpassword=${password}\n` +
+                `debug=0\nlogips=1\nlogtimemicros=1\nblockmintxfee=0\n` +
+                `deprecatedrpc=signrawtransaction\nlistenonion=0\nfallbackfee=0.00001\ntxindex=1`
+            ]
         });
 
         logger.log('Starting bitcoind container...');
         await container.start();
 
-        // Pipe the container logs to the file
-        const logs = await container.logs({
-            follow: true,
-            stdout: true,
-            stderr: true,
-        });
+        // Pipe logs
+        const logs = await container.logs({ follow: true, stdout: true, stderr: true });
         logs.pipe(new FileLogger('bitcoind').getWriteStream());
 
         return container;
     } catch (error) {
         logger.error('Error starting bitcoind container:', error);
-        await container.remove({ v: true, force: true });
-        throw new Error(error);
+        if (container) {
+            await container.remove({ v: true, force: true }).catch(e => logger.error(e));
+        }
+        throw error;
     }
 }
 
