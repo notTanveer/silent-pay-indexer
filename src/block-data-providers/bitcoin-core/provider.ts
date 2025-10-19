@@ -187,7 +187,7 @@ export class BitcoinCoreProvider
         });
     }
 
-    private async getTipHeight(): Promise<number> {
+    async getTipHeight(): Promise<number> {
         return this.request({
             method: 'getblockcount',
             params: [],

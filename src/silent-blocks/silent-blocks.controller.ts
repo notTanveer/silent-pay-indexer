@@ -62,4 +62,11 @@ export class SilentBlocksController {
             await this.silentBlocksService.getLatestIndexedBlockHeight();
         return { height };
     }
+
+    @Get('tip-height')
+    @UseInterceptors(CacheInterceptor)
+    async getTipHeight() {
+        const height = await this.silentBlocksService.getTipHeight();
+        return { height };
+    }
 }

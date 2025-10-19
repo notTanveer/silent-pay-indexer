@@ -9,6 +9,7 @@ import { Transaction } from '@/transactions/transaction.entity';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { TransactionOutput } from '@/transactions/transaction-output.entity';
 import { BlockStateService } from '@/block-state/block-state.service';
+import { BitcoinCoreProvider } from '@/block-data-providers/bitcoin-core/provider';
 
 describe('SilentBlocksService', () => {
     let service: SilentBlocksService;
@@ -47,6 +48,12 @@ describe('SilentBlocksService', () => {
                     provide: BlockStateService,
                     useValue: {
                         getCurrentBlockState: jest.fn(),
+                    },
+                },
+                {
+                    provide: BitcoinCoreProvider,
+                    useValue: {
+                        getTipHeight: jest.fn().mockResolvedValue(920000),
                     },
                 },
             ],

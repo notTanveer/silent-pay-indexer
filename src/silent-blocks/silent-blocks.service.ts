@@ -7,6 +7,7 @@ import { SilentBlocksGateway } from '@/silent-blocks/silent-blocks.gateway';
 import { OnEvent } from '@nestjs/event-emitter';
 import { INDEXED_BLOCK_EVENT } from '@/common/events';
 import { BlockStateService } from '@/block-state/block-state.service';
+import { BitcoinCoreProvider } from '@/block-data-providers/bitcoin-core/provider';
 
 @Injectable()
 export class SilentBlocksService {
@@ -16,6 +17,7 @@ export class SilentBlocksService {
         private readonly transactionsService: TransactionsService,
         private readonly silentBlocksGateway: SilentBlocksGateway,
         private readonly blockStateService: BlockStateService,
+        private readonly bitcoinCoreProvider: BitcoinCoreProvider,
     ) {}
 
     @OnEvent(INDEXED_BLOCK_EVENT)
@@ -92,5 +94,9 @@ export class SilentBlocksService {
         const currentBlockState =
             await this.blockStateService.getCurrentBlockState();
         return currentBlockState?.blockHeight ?? 0;
+    }
+
+    async getTipHeight(): Promise<number> {
+        return this.bitcoinCoreProvider.getTipHeight();
     }
 }
