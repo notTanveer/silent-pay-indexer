@@ -6,6 +6,7 @@ import { encodeVarInt, varIntSize } from '@/common/common';
 import { SilentBlocksGateway } from '@/silent-blocks/silent-blocks.gateway';
 import { OnEvent } from '@nestjs/event-emitter';
 import { INDEXED_BLOCK_EVENT } from '@/common/events';
+import { createView, hexToUint8Array } from '@/common/uint8array';
 
 @Injectable()
 export class SilentBlocksService {
@@ -37,24 +38,41 @@ export class SilentBlocksService {
         return length;
     }
 
-    public encodeSilentBlock(transactions: Transaction[]): Buffer {
-        const block = Buffer.alloc(this.getSilentBlockLength(transactions));
+    public encodeSilentBlock(transactions: Transaction[]): Uint8Array {
+        const block = new Uint8Array(this.getSilentBlockLength(transactions));
+        const view = createView(block);
         let cursor = 0;
 
-        cursor = block.writeUInt8(SILENT_PAYMENT_BLOCK_TYPE, cursor);
+        view.setUint8(cursor, SILENT_PAYMENT_BLOCK_TYPE);
+        cursor += 1;
         cursor = encodeVarInt(transactions.length, block, cursor);
 
         for (const tx of transactions) {
-            cursor += block.write(tx.id, cursor, 32, 'hex');
+            // Write txid (32 bytes)
+            block.set(hexToUint8Array(tx.id), cursor);
+            cursor += 32;
+
             cursor = encodeVarInt(tx.outputs.length, block, cursor);
 
             for (const output of tx.outputs) {
-                cursor = block.writeBigUInt64BE(BigInt(output.value), cursor);
-                cursor += block.write(output.pubKey, cursor, 32, 'hex');
-                cursor = block.writeUInt32BE(output.vout, cursor);
+                // Write value as BigUint64BE
+                const valueView = createView(block, cursor);
+                valueView.setBigUint64(0, BigInt(output.value), false); // false = big endian
+                cursor += 8;
+
+                // Write pubKey (32 bytes)
+                block.set(hexToUint8Array(output.pubKey), cursor);
+                cursor += 32;
+
+                // Write vout as Uint32BE
+                const voutView = createView(block, cursor);
+                voutView.setUint32(0, output.vout, false); // false = big endian
+                cursor += 4;
             }
 
-            cursor += block.write(tx.scanTweak, cursor, 33, 'hex');
+            // Write scanTweak (33 bytes)
+            block.set(hexToUint8Array(tx.scanTweak), cursor);
+            cursor += 33;
         }
 
         return block;
@@ -63,7 +81,7 @@ export class SilentBlocksService {
     async getSilentBlockByHeight(
         blockHeight: number,
         filterSpent: boolean,
-    ): Promise<Buffer> {
+    ): Promise<Uint8Array> {
         const transactions =
             await this.transactionsService.getTransactionByBlockHeight(
                 blockHeight,
@@ -76,7 +94,7 @@ export class SilentBlocksService {
     async getSilentBlockByHash(
         blockHash: string,
         filterSpent: boolean,
-    ): Promise<Buffer> {
+    ): Promise<Uint8Array> {
         const transactions =
             await this.transactionsService.getTransactionByBlockHash(
                 blockHash,

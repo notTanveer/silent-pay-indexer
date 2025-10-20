@@ -8,6 +8,7 @@ import { DataSource, Repository } from 'typeorm';
 import { Transaction } from '@/transactions/transaction.entity';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { TransactionOutput } from '@/transactions/transaction-output.entity';
+import { uint8ArrayToHex } from '@/common/uint8array';
 
 describe('SilentBlocksService', () => {
     let service: SilentBlocksService;
@@ -62,7 +63,7 @@ describe('SilentBlocksService', () => {
                 false,
             );
 
-            expect(encodedBlock.toString('hex')).toEqual(encodedBlockHex);
+            expect(uint8ArrayToHex(encodedBlock)).toEqual(encodedBlockHex);
         },
     );
 
@@ -76,7 +77,7 @@ describe('SilentBlocksService', () => {
                 false,
             );
 
-            expect(encodedBlock.toString('hex')).toEqual(encodedBlockHex);
+            expect(uint8ArrayToHex(encodedBlock)).toEqual(encodedBlockHex);
         },
     );
 
@@ -92,7 +93,7 @@ describe('SilentBlocksService', () => {
             true,
         );
 
-        expect(encodedBlock.toString('hex')).toEqual(
+        expect(uint8ArrayToHex(encodedBlock)).toEqual(
             silentBlockEncodingFixture[0].filteredOutputEncodedBlockHex,
         );
 
@@ -104,7 +105,7 @@ describe('SilentBlocksService', () => {
             true,
         );
 
-        expect(encodedBlock.toString('hex')).toEqual('0000');
+        expect(uint8ArrayToHex(encodedBlock)).toEqual('0000');
     });
 
     afterEach(async () => {
