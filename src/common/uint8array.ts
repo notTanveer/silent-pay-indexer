@@ -262,8 +262,13 @@ const hexToDecimalLookupTable: Record<string, number | undefined> = {
 export function hexToUint8Array(hexString: string): Uint8Array {
     assertString(hexString);
 
-    // throw error for empty string or invalid length
-    if (hexString.length === 0 || hexString.length % 2 !== 0) {
+    // handle empty string by returning empty Uint8Array
+    if (hexString.length === 0) {
+        return new Uint8Array(0);
+    }
+
+    // throw error for invalid length
+    if (hexString.length % 2 !== 0) {
         throw new Error('Invalid hex string');
     }
 
