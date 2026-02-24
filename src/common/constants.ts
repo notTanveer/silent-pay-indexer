@@ -3,7 +3,7 @@ export const NUMS_H = Buffer.from(
     'hex',
 );
 
-export const TAPROOT_ACTIVATION_HEIGHT = 709632;
+export const TAPROOT_ACTIVATION_HEIGHT = 842579;
 
 export const SATS_PER_BTC = 100_000_000;
 
