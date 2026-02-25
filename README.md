@@ -76,6 +76,16 @@ Read more about silent payments in [BIP 352](https://github.com/bitcoin/bips/pul
     $ npm run start:dev
 ```
 
+For a VM/server deployment (always-on process):
+
+```bash
+  $ npm run build
+  $ npm run pm2:start
+  $ npm run pm2:save
+```
+
+This runs the app without file-watch mode and keeps it alive even after closing the terminal.
+
 ## :file_folder: File Structure
 
 This is a basic overview of the project structure, it reflects the main components of the silent payment indexer application. The `src` directory is further divided into subdirectories based on the different functionalities of the application.
