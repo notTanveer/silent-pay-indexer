@@ -2,6 +2,7 @@ import { Transaction } from '@/transactions/transaction.entity';
 import {
     Entity,
     Column,
+    Index,
     PrimaryColumn,
     ManyToOne,
     JoinColumn,
@@ -10,6 +11,7 @@ import {
 import { TransactionOutput as Output } from '@/indexer/indexer.service';
 
 @Entity()
+@Index(['isSpent'])
 export class TransactionOutput {
     static fromOutput(output: Output, index: number): TransactionOutput {
         const newOutput = new TransactionOutput();

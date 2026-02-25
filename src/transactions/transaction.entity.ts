@@ -1,7 +1,15 @@
 import { TransactionOutput } from '@/transactions/transaction-output.entity';
-import { Column, Entity, OneToMany, PrimaryColumn, Relation } from 'typeorm';
+import {
+    Column,
+    Entity,
+    Index,
+    OneToMany,
+    PrimaryColumn,
+    Relation,
+} from 'typeorm';
 
 @Entity()
+@Index(['blockHeight'])
 export class Transaction {
     @PrimaryColumn({ type: 'varchar', length: 64 }) // 32 bytes * 2 [HEX]
     id: string; // txid
