@@ -1,0 +1,23 @@
+db:
+  path: '/var/lib/silent-pay-indexer/database.sqlite'
+  synchronize: false
+app:
+  port: 3000
+  verbose: false
+  debug: false
+  network: main
+  requestRetry:
+    delay: 1000
+    count: 5
+providerType: BITCOIN_CORE_RPC
+bitcoinCore:
+  protocol: http
+  rpcHost: 127.0.0.1
+  rpcPass: change-me
+  rpcUser: change-me
+  rpcPort: 8332
+throttler:
+  ttl: 1000
+  limit: 20
+cache:
+  ttl: 5000

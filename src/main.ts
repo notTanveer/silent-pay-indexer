@@ -8,6 +8,9 @@ declare const module: any;
 
 async function bootstrap() {
     const app = await NestFactory.create(AppModule);
+    // The app runs behind Nginx/Cloudflare in production.
+    // Trusting proxy headers preserves real client IPs.
+    app.getHttpAdapter().getInstance().set('trust proxy', true);
     app.useWebSocketAdapter(new WsAdapter(app));
 
     const configService = app.get<ConfigService>(ConfigService);

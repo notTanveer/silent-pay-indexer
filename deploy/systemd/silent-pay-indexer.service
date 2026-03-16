@@ -1,0 +1,18 @@
+[Unit]
+Description=Silent Pay Indexer (NestJS)
+After=network.target
+
+[Service]
+Type=simple
+# Replace this user/group to match your VPS deployment user.
+User=sahil
+Group=sahil
+WorkingDirectory=/opt/silent-pay-indexer
+EnvironmentFile=/etc/silent-pay-indexer/silent-pay-indexer.env
+ExecStart=/usr/bin/node /opt/silent-pay-indexer/dist/main.js
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

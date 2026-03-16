@@ -86,6 +86,12 @@ For a VM/server deployment (always-on process):
 
 This runs the app without file-watch mode and keeps it alive even after closing the terminal.
 
+### VPS Deployment with Nginx + HTTPS
+
+For production deployment on a VPS with domain + TLS (Let's Encrypt or Cloudflare Origin cert), follow:
+
+- `docs/deployment/vps-nginx-https.md`
+
 ## :file_folder: File Structure
 
 This is a basic overview of the project structure, it reflects the main components of the silent payment indexer application. The `src` directory is further divided into subdirectories based on the different functionalities of the application.
