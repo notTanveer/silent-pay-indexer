@@ -104,9 +104,22 @@ Choose one of the following options.
 
 ### Option A: Let's Encrypt (public certificate)
 
-Issue cert and auto-configure Nginx redirect to HTTPS:
+Fast path (recommended):
 
 ```bash
+sudo bash deploy/scripts/setup-nginx-cloudflare.sh sp.tanvrr.dpdns.org your-email@example.com /opt/silent-pay-indexer
+```
+
+This will install Nginx site config, validate Nginx, reload it, and run certbot.
+
+Manual path:
+
+```bash
+sudo cp deploy/nginx/silent-pay-indexer.conf /etc/nginx/sites-available/silent-pay-indexer
+sudo ln -sf /etc/nginx/sites-available/silent-pay-indexer /etc/nginx/sites-enabled/silent-pay-indexer
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl reload nginx
 sudo certbot --nginx -d sp.tanvrr.dpdns.org
 ```
 
@@ -122,16 +135,34 @@ sudo certbot renew --dry-run
 
 Use this when DNS is proxied through Cloudflare (orange cloud).
 
-1. Put cert and key on VPS:
+1. Put cert and key in your project on VPS:
+
+- Commit-safe public cert: `deploy/certs/cloudflare-origin.pem`
+- Private key (do not commit): `deploy/certs/cloudflare-origin.key`
+
+2. Run the fast setup script:
+
+```bash
+sudo bash deploy/scripts/setup-nginx-cloudflare.sh sp.tanvrr.dpdns.org /opt/silent-pay-indexer
+```
+
+This script will:
+
+- copy cert/key into `/etc/ssl/...`
+- install/enable Nginx site config
+- validate with `nginx -t`
+- reload Nginx
+
+3. Manual fallback (if needed):
 
 ```bash
 sudo mkdir -p /etc/ssl/private
-sudo cp /path/to/cloudflare-origin.pem /etc/ssl/certs/cloudflare-origin.pem
-sudo cp /path/to/cloudflare-origin.key /etc/ssl/private/cloudflare-origin.key
+sudo cp deploy/certs/cloudflare-origin.pem /etc/ssl/certs/cloudflare-origin.pem
+sudo cp deploy/certs/cloudflare-origin.key /etc/ssl/private/cloudflare-origin.key
 sudo chmod 600 /etc/ssl/private/cloudflare-origin.key
 ```
 
-2. Enable the Cloudflare-specific Nginx config:
+4. Enable the Cloudflare-specific Nginx config:
 
 ```bash
 sudo cp deploy/nginx/silent-pay-indexer.cloudflare-origin.conf /etc/nginx/sites-available/silent-pay-indexer
@@ -140,7 +171,7 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-3. In Cloudflare dashboard for `sp.tanvrr.dpdns.org`:
+5. In Cloudflare dashboard for `sp.tanvrr.dpdns.org`:
 
 - Keep proxy enabled (orange cloud).
 - Set SSL/TLS mode to `Full (strict)`.
