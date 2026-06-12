@@ -36,7 +36,10 @@ export class IndexerService {
         blockHash: string,
         blockTime: number,
         batch: BatchWriter,
-    ): Promise<Map<string, { pubKey: string; value: number }>> {
+    ): Promise<{
+        pendingOutputs: Map<string, { pubKey: string; value: number }>;
+        txData: TransactionData | null;
+    }> {
         const scanResult = this.deriveOutputsAndComputeScanTweak(vin, vout);
         if (scanResult !== null) {
             const { scanTweak, eligibleOutputs } = scanResult;
@@ -49,7 +52,7 @@ export class IndexerService {
                 isSpent: false,
             }));
 
-            const transaction: TransactionData = {
+            const txData: TransactionData = {
                 id: txid,
                 blockHeight,
                 blockHash,
@@ -58,9 +61,13 @@ export class IndexerService {
                 outputs,
             };
 
-            return this.storageService.saveTransaction(batch, transaction);
+            const pendingOutputs = this.storageService.saveTransaction(
+                batch,
+                txData,
+            );
+            return { pendingOutputs, txData };
         }
-        return new Map();
+        return { pendingOutputs: new Map(), txData: null };
     }
 
     public deriveOutputsAndComputeScanTweak(

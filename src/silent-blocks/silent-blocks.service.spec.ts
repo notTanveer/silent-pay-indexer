@@ -6,6 +6,7 @@ import { silentBlockEncodingFixture } from '@/silent-blocks/silent-blocks.servic
 import { SilentBlocksGateway } from '@/silent-blocks/silent-blocks.gateway';
 import { BlockStateService } from '@/block-state/block-state.service';
 import { StorageService } from '@/storage/storage.service';
+import { DbTransactionService } from '@/db-transaction/db-transaction.service';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -25,6 +26,7 @@ describe('SilentBlocksService', () => {
                 SilentBlocksService,
                 TransactionsService,
                 StorageService,
+                DbTransactionService,
                 {
                     provide: ConfigService,
                     useValue: {

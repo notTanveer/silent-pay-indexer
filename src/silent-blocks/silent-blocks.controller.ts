@@ -1,15 +1,18 @@
 import { CacheInterceptor } from '@nestjs/cache-manager';
 import {
+    BadRequestException,
     Controller,
     Get,
     Param,
     ParseBoolPipe,
+    ParseIntPipe,
     Query,
     Res,
     UseInterceptors,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { SilentBlocksService } from '@/silent-blocks/silent-blocks.service';
+import { MAX_SILENT_BLOCK_RANGE } from '@/common/constants';
 
 @Controller('silent-block')
 export class SilentBlocksController {
@@ -51,6 +54,40 @@ export class SilentBlocksController {
         res.set({
             'Content-Type': 'application/octet-stream',
             'Content-Length': buffer.length,
+        });
+        res.send(buffer);
+    }
+
+    @Get('range')
+    async getSilentBlocksRange(
+        @Query('startHeight', ParseIntPipe) startHeight: number,
+        @Query('endHeight', ParseIntPipe) endHeight: number,
+        @Res() res: Response,
+    ) {
+        if (endHeight < startHeight) {
+            throw new BadRequestException('endHeight must be >= startHeight');
+        }
+        if (endHeight - startHeight + 1 > MAX_SILENT_BLOCK_RANGE) {
+            throw new BadRequestException(
+                `Range exceeds maximum of ${MAX_SILENT_BLOCK_RANGE} blocks`,
+            );
+        }
+
+        const latestHeight =
+            await this.silentBlocksService.getLatestIndexedBlockHeight();
+
+        const buffer = await this.silentBlocksService.getSilentBlocksRange(
+            startHeight,
+            endHeight,
+        );
+
+        const isDeepRange = endHeight <= latestHeight - 6;
+        res.set({
+            'Content-Type': 'application/octet-stream',
+            'Content-Length': buffer.length,
+            'Cache-Control': isDeepRange
+                ? 'public, max-age=31536000, immutable'
+                : 'no-store',
         });
         res.send(buffer);
     }

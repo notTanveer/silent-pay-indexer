@@ -13,6 +13,7 @@ export class BlockStateService {
     async removeState(state: BlockStateData): Promise<void> {
         const batch = this.storageService.createBatch();
         this.storageService.deleteBlockState(batch, state.blockHeight);
+        this.storageService.deleteSilentBlock(batch, state.blockHeight);
         await this.storageService.deleteTransactionsByBlockHash(
             batch,
             state.blockHash,

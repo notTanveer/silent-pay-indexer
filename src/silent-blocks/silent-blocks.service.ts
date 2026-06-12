@@ -1,22 +1,81 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { TransactionData } from '@/storage/interfaces';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { TransactionsService } from '@/transactions/transactions.service';
-import { SILENT_PAYMENT_BLOCK_TYPE } from '@/common/constants';
-import { encodeVarInt, varIntSize } from '@/common/common';
 import { SilentBlocksGateway } from '@/silent-blocks/silent-blocks.gateway';
 import { OnEvent } from '@nestjs/event-emitter';
 import { INDEXED_BLOCK_EVENT } from '@/common/events';
 import { BlockStateService } from '@/block-state/block-state.service';
+import { StorageService } from '@/storage/storage.service';
+import { DbTransactionService } from '@/db-transaction/db-transaction.service';
+import { encodeSilentBlock } from '@/silent-blocks/silent-block-encoder';
+
+const BACKFILL_BATCH_SIZE = 100;
 
 @Injectable()
-export class SilentBlocksService {
+export class SilentBlocksService implements OnModuleInit {
     private readonly logger = new Logger(SilentBlocksService.name);
 
     constructor(
         private readonly transactionsService: TransactionsService,
         private readonly silentBlocksGateway: SilentBlocksGateway,
         private readonly blockStateService: BlockStateService,
+        private readonly storageService: StorageService,
+        private readonly dbTransactionService: DbTransactionService,
     ) {}
+
+    onModuleInit() {
+        this.backfillSilentBlocks().catch((err) =>
+            this.logger.error(`Silent block backfill failed: ${err.message}`),
+        );
+    }
+
+    private async backfillSilentBlocks(): Promise<void> {
+        const tip = await this.blockStateService.getCurrentBlockState();
+        if (!tip) return;
+
+        const startHeight = this.storageService.getLowestBlockStateHeight();
+        if (startHeight === null) return;
+
+        const tipHeight = tip.blockHeight;
+        let missing = 0;
+
+        for (let h = startHeight; h <= tipHeight; h += BACKFILL_BATCH_SIZE) {
+            const batchEnd = Math.min(h + BACKFILL_BATCH_SIZE - 1, tipHeight);
+            const existingBlobs = this.storageService.getSilentBlocksRange(
+                h,
+                batchEnd,
+            );
+            const existingHeights = new Set(existingBlobs.map((b) => b.height));
+
+            const missingHeights: number[] = [];
+            for (let height = h; height <= batchEnd; height++) {
+                if (!existingHeights.has(height)) missingHeights.push(height);
+            }
+
+            if (missingHeights.length === 0) continue;
+
+            await this.dbTransactionService.execute(async (batch) => {
+                for (const height of missingHeights) {
+                    const txs =
+                        await this.storageService.getTransactionsByBlockHeight(
+                            height,
+                            false,
+                        );
+                    this.storageService.saveSilentBlock(
+                        batch,
+                        height,
+                        encodeSilentBlock(txs),
+                    );
+                    missing++;
+                }
+            });
+        }
+
+        if (missing > 0) {
+            this.logger.log(
+                `Silent block backfill complete: ${missing} blobs written`,
+            );
+        }
+    }
 
     @OnEvent(INDEXED_BLOCK_EVENT)
     async handleBlockIndexedEvent(blockHeight: number) {
@@ -28,51 +87,22 @@ export class SilentBlocksService {
         this.silentBlocksGateway.broadcastSilentBlock(silentBlock);
     }
 
-    private getSilentBlockLength(transactions: TransactionData[]): number {
-        let length = 1 + varIntSize(transactions.length); // 1 byte for type + varint for transactions count
-
-        for (const tx of transactions) {
-            length +=
-                65 + varIntSize(tx.outputs.length) + tx.outputs.length * 44; // 32 + varint for output count + 44 per output + 33
-        }
-
-        return length;
-    }
-
-    public encodeSilentBlock(transactions: TransactionData[]): Buffer {
-        const block = Buffer.alloc(this.getSilentBlockLength(transactions));
-        let cursor = 0;
-
-        cursor = block.writeUInt8(SILENT_PAYMENT_BLOCK_TYPE, cursor);
-        cursor = encodeVarInt(transactions.length, block, cursor);
-
-        for (const tx of transactions) {
-            cursor += block.write(tx.id, cursor, 32, 'hex');
-            cursor = encodeVarInt(tx.outputs.length, block, cursor);
-
-            for (const output of tx.outputs) {
-                cursor = block.writeBigUInt64BE(BigInt(output.value), cursor);
-                cursor += block.write(output.pubKey, cursor, 32, 'hex');
-                cursor = block.writeUInt32BE(output.vout, cursor);
-            }
-
-            cursor += block.write(tx.scanTweak, cursor, 33, 'hex');
-        }
-
-        return block;
-    }
-
     async getSilentBlockByHeight(
         blockHeight: number,
         filterSpent: boolean,
     ): Promise<Buffer> {
+        if (!filterSpent) {
+            const blob = this.storageService.getSilentBlock(blockHeight);
+            if (blob) return blob;
+        }
+
         const transactions =
             await this.transactionsService.getTransactionByBlockHeight(
                 blockHeight,
                 filterSpent,
             );
 
-        return this.encodeSilentBlock(transactions);
+        return encodeSilentBlock(transactions);
     }
 
     async getSilentBlockByHash(
@@ -85,7 +115,36 @@ export class SilentBlocksService {
                 filterSpent,
             );
 
-        return this.encodeSilentBlock(transactions);
+        return encodeSilentBlock(transactions);
+    }
+
+    /**
+     * Returns a framed binary buffer containing silent blocks for each height in
+     * [startHeight, endHeight]. Each frame: height (4B BE) | byteLength (4B BE) | silentBlockBytes.
+     */
+    async getSilentBlocksRange(
+        startHeight: number,
+        endHeight: number,
+    ): Promise<Buffer> {
+        const blobs = this.storageService.getSilentBlocksRange(
+            startHeight,
+            endHeight,
+        );
+
+        const blobsByHeight = new Map(blobs.map((b) => [b.height, b.blob]));
+        const frames: Buffer[] = [];
+
+        for (let h = startHeight; h <= endHeight; h++) {
+            const blob =
+                blobsByHeight.get(h) ??
+                (await this.getSilentBlockByHeight(h, false));
+            const header = Buffer.alloc(8);
+            header.writeUInt32BE(h, 0);
+            header.writeUInt32BE(blob.length, 4);
+            frames.push(header, blob);
+        }
+
+        return Buffer.concat(frames);
     }
 
     async getLatestIndexedBlockHeight(): Promise<number> {
