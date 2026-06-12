@@ -10,6 +10,12 @@ import { encodeSilentBlock } from '@/silent-blocks/silent-block-encoder';
 
 const BACKFILL_BATCH_SIZE = 100;
 
+// Operation-state id + version gating the one-time repair pass. Bump the
+// version whenever a fix to the silent block encoding requires existing
+// blobs to be rewritten from canonical tx data.
+const SILENT_BLOCK_REPAIR_STATE = 'silent-block-repair';
+const SILENT_BLOCK_REPAIR_VERSION = 1;
+
 @Injectable()
 export class SilentBlocksService implements OnModuleInit {
     private readonly logger = new Logger(SilentBlocksService.name);
@@ -36,7 +42,19 @@ export class SilentBlocksService implements OnModuleInit {
         if (startHeight === null) return;
 
         const tipHeight = tip.blockHeight;
-        let missing = 0;
+
+        // In repair mode every height is re-encoded from canonical tx data and
+        // compared against the stored blob, so blobs corrupted by an older
+        // encoder are rewritten. Otherwise we only fill missing heights (cheap:
+        // trust existing blobs without re-reading tx data). The pass runs once
+        // per version, gated by an operation-state marker.
+        const repairState = await this.storageService.getOperationState(
+            SILENT_BLOCK_REPAIR_STATE,
+        );
+        const repair =
+            (repairState?.state?.version ?? 0) < SILENT_BLOCK_REPAIR_VERSION;
+
+        let written = 0;
 
         for (let h = startHeight; h <= tipHeight; h += BACKFILL_BATCH_SIZE) {
             const batchEnd = Math.min(h + BACKFILL_BATCH_SIZE - 1, tipHeight);
@@ -44,35 +62,56 @@ export class SilentBlocksService implements OnModuleInit {
                 h,
                 batchEnd,
             );
-            const existingHeights = new Set(existingBlobs.map((b) => b.height));
+            const existingByHeight = new Map(
+                existingBlobs.map((b) => [b.height, b.blob]),
+            );
 
-            const missingHeights: number[] = [];
+            const pending: { height: number; blob: Buffer }[] = [];
             for (let height = h; height <= batchEnd; height++) {
-                if (!existingHeights.has(height)) missingHeights.push(height);
+                const existing = existingByHeight.get(height);
+
+                // Gap-fill mode trusts a present blob and skips re-encoding.
+                if (existing && !repair) continue;
+
+                const txs =
+                    await this.storageService.getTransactionsByBlockHeight(
+                        height,
+                        false,
+                    );
+                const fresh = encodeSilentBlock(txs);
+
+                if (!existing || !existing.equals(fresh)) {
+                    pending.push({ height, blob: fresh });
+                }
             }
 
-            if (missingHeights.length === 0) continue;
+            if (pending.length === 0) continue;
 
             await this.dbTransactionService.execute(async (batch) => {
-                for (const height of missingHeights) {
-                    const txs =
-                        await this.storageService.getTransactionsByBlockHeight(
-                            height,
-                            false,
-                        );
-                    this.storageService.saveSilentBlock(
-                        batch,
-                        height,
-                        encodeSilentBlock(txs),
-                    );
-                    missing++;
+                for (const { height, blob } of pending) {
+                    this.storageService.saveSilentBlock(batch, height, blob);
+                    written++;
                 }
             });
         }
 
-        if (missing > 0) {
+        // Mark the repair done only after a full successful pass; a crash
+        // mid-repair leaves the marker unset so it re-runs (idempotent).
+        if (repair) {
+            const batch = this.storageService.createBatch();
+            this.storageService.saveOperationState(
+                batch,
+                SILENT_BLOCK_REPAIR_STATE,
+                { version: SILENT_BLOCK_REPAIR_VERSION },
+            );
+            await batch.commit();
+        }
+
+        if (written > 0) {
             this.logger.log(
-                `Silent block backfill complete: ${missing} blobs written`,
+                `Silent block backfill complete: ${written} blobs ${
+                    repair ? 'written/repaired' : 'written'
+                }`,
             );
         }
     }
