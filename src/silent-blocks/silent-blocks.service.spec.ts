@@ -6,6 +6,7 @@ import { silentBlockEncodingFixture } from '@/silent-blocks/silent-blocks.servic
 import { SilentBlocksGateway } from '@/silent-blocks/silent-blocks.gateway';
 import { BlockStateService } from '@/block-state/block-state.service';
 import { StorageService } from '@/storage/storage.service';
+import { DbTransactionService } from '@/db-transaction/db-transaction.service';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -14,6 +15,7 @@ import * as os from 'os';
 describe('SilentBlocksService', () => {
     let service: SilentBlocksService;
     let storageService: StorageService;
+    let blockStateService: { getCurrentBlockState: jest.Mock };
     let tmpDir: string;
 
     beforeEach(async () => {
@@ -25,6 +27,7 @@ describe('SilentBlocksService', () => {
                 SilentBlocksService,
                 TransactionsService,
                 StorageService,
+                DbTransactionService,
                 {
                     provide: ConfigService,
                     useValue: {
@@ -49,6 +52,7 @@ describe('SilentBlocksService', () => {
 
         storageService = module.get<StorageService>(StorageService);
         await storageService.onModuleInit();
+        blockStateService = module.get(BlockStateService);
         service = module.get<SilentBlocksService>(SilentBlocksService);
     });
 
@@ -148,6 +152,52 @@ describe('SilentBlocksService', () => {
         );
 
         expect(encodedBlock.toString('hex')).toEqual('0000');
+    });
+
+    it('should repair a corrupt silent block blob during backfill', async () => {
+        const fixture = silentBlockEncodingFixture[0];
+        const { blockHeight, blockHash, encodedBlockHex } = fixture;
+
+        // Seed canonical tx data + block state (the tip), then plant a corrupt
+        // blob for the height (as an older buggy encoder would have written).
+        const batch = storageService.createBatch();
+        for (const tx of fixture.transactions) {
+            storageService.saveTransaction(batch, {
+                ...tx,
+                outputs: tx.outputs.map((o) => ({
+                    ...o,
+                    transactionId: tx.id,
+                })),
+            });
+        }
+        storageService.saveBlockState(batch, { blockHeight, blockHash });
+        storageService.saveSilentBlock(
+            batch,
+            blockHeight,
+            Buffer.from('deadbeef', 'hex'),
+        );
+        await batch.commit();
+
+        blockStateService.getCurrentBlockState.mockResolvedValue({
+            blockHeight,
+            blockHash,
+        });
+
+        // Run the (private) backfill directly.
+        await (
+            service as unknown as {
+                backfillSilentBlocks: () => Promise<void>;
+            }
+        ).backfillSilentBlocks();
+
+        const repaired = storageService.getSilentBlock(blockHeight);
+        expect(repaired?.toString('hex')).toEqual(encodedBlockHex);
+
+        // The repair marker is set so the heavy pass runs only once.
+        const marker = await storageService.getOperationState(
+            'silent-block-repair',
+        );
+        expect(marker?.state?.version).toBe(1);
     });
 
     afterEach(async () => {

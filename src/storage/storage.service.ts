@@ -39,6 +39,9 @@ import {
     unspentPrefixRange,
     blockStateRange,
     timeIndexSeek,
+    encodeSilentBlockKey,
+    decodeSilentBlockKey,
+    silentBlockSpanRange,
 } from '@/storage/key-encoding';
 
 @Injectable()
@@ -176,6 +179,14 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
                 blockHeight: decodeBlockStateKey(key),
                 blockHash: value.toString('hex'),
             }),
+        );
+        return results.length > 0 ? results[0] : null;
+    }
+
+    getLowestBlockStateHeight(): number | null {
+        const range = blockStateRange();
+        const results = this.collectRange({ ...range, limit: 1 }, (key) =>
+            decodeBlockStateKey(key),
         );
         return results.length > 0 ? results[0] : null;
     }
@@ -348,6 +359,31 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
 
     deleteBlockState(batch: BatchWriter, height: number): void {
         batch.del(encodeBlockStateKey(height));
+    }
+
+    // --- Silent block blobs ---
+
+    saveSilentBlock(batch: BatchWriter, height: number, blob: Buffer): void {
+        batch.put(encodeSilentBlockKey(height), blob);
+    }
+
+    deleteSilentBlock(batch: BatchWriter, height: number): void {
+        batch.del(encodeSilentBlockKey(height));
+    }
+
+    getSilentBlock(height: number): Buffer | null {
+        return this.get(encodeSilentBlockKey(height));
+    }
+
+    getSilentBlocksRange(
+        startHeight: number,
+        endHeight: number,
+    ): { height: number; blob: Buffer }[] {
+        const range = silentBlockSpanRange(startHeight, endHeight);
+        return this.collectRange(range, (key, value) => ({
+            height: decodeSilentBlockKey(key),
+            blob: value,
+        }));
     }
 
     // --- Private helpers ---

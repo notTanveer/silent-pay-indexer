@@ -17,6 +17,8 @@ import { DbTransactionService } from '@/db-transaction/db-transaction.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { INDEXED_BLOCK_EVENT } from '@/common/events';
 import { StorageService } from '@/storage/storage.service';
+import { encodeSilentBlock } from '@/silent-blocks/silent-block-encoder';
+import { TransactionData } from '@/storage/interfaces';
 
 @Injectable()
 export class EsploraProvider
@@ -142,6 +144,7 @@ export class EsploraProvider
     private async processBlock(height: number, hash: string) {
         const state = await this.getState();
         const txids = await this.getTxidsForBlock(hash);
+        const allBlockTxData: TransactionData[] = [];
 
         for (
             let i = state.lastProcessedTxIndex + 1;
@@ -152,6 +155,7 @@ export class EsploraProvider
                 i,
                 Math.min(i + this.batchSize, txids.length),
             );
+            const isLastBatch = i + this.batchSize >= txids.length;
 
             try {
                 await this.dbTransactionService.execute(async (batch) => {
@@ -182,7 +186,7 @@ export class EsploraProvider
                                 value: output.value,
                             }));
 
-                            const saved = await this.indexTransaction(
+                            const result = await this.indexTransaction(
                                 txid,
                                 vin,
                                 vout,
@@ -192,9 +196,11 @@ export class EsploraProvider
                                 batch,
                             );
 
-                            for (const [k, v] of saved) {
+                            for (const [k, v] of result.pendingOutputs) {
                                 pendingOutputs.set(k, v);
                             }
+                            if (result.txData)
+                                allBlockTxData.push(result.txData);
                         }, this),
                     );
 
@@ -203,6 +209,14 @@ export class EsploraProvider
                         spentOutpoints,
                         pendingOutputs,
                     );
+
+                    if (isLastBatch) {
+                        this.storageService.saveSilentBlock(
+                            batch,
+                            height,
+                            encodeSilentBlock(allBlockTxData),
+                        );
+                    }
 
                     state.indexedBlockHeight = height;
                     state.lastProcessedTxIndex = i + this.batchSize - 1;

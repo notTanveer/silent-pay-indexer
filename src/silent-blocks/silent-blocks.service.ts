@@ -1,22 +1,120 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { TransactionData } from '@/storage/interfaces';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { TransactionsService } from '@/transactions/transactions.service';
-import { SILENT_PAYMENT_BLOCK_TYPE } from '@/common/constants';
-import { encodeVarInt, varIntSize } from '@/common/common';
 import { SilentBlocksGateway } from '@/silent-blocks/silent-blocks.gateway';
 import { OnEvent } from '@nestjs/event-emitter';
 import { INDEXED_BLOCK_EVENT } from '@/common/events';
 import { BlockStateService } from '@/block-state/block-state.service';
+import { StorageService } from '@/storage/storage.service';
+import { DbTransactionService } from '@/db-transaction/db-transaction.service';
+import { encodeSilentBlock } from '@/silent-blocks/silent-block-encoder';
+
+const BACKFILL_BATCH_SIZE = 100;
+
+// Operation-state id + version gating the one-time repair pass. Bump the
+// version whenever a fix to the silent block encoding requires existing
+// blobs to be rewritten from canonical tx data.
+const SILENT_BLOCK_REPAIR_STATE = 'silent-block-repair';
+const SILENT_BLOCK_REPAIR_VERSION = 1;
 
 @Injectable()
-export class SilentBlocksService {
+export class SilentBlocksService implements OnModuleInit {
     private readonly logger = new Logger(SilentBlocksService.name);
 
     constructor(
         private readonly transactionsService: TransactionsService,
         private readonly silentBlocksGateway: SilentBlocksGateway,
         private readonly blockStateService: BlockStateService,
+        private readonly storageService: StorageService,
+        private readonly dbTransactionService: DbTransactionService,
     ) {}
+
+    onModuleInit() {
+        this.backfillSilentBlocks().catch((err) =>
+            this.logger.error(`Silent block backfill failed: ${err.message}`),
+        );
+    }
+
+    private async backfillSilentBlocks(): Promise<void> {
+        const tip = await this.blockStateService.getCurrentBlockState();
+        if (!tip) return;
+
+        const startHeight = this.storageService.getLowestBlockStateHeight();
+        if (startHeight === null) return;
+
+        const tipHeight = tip.blockHeight;
+
+        // In repair mode every height is re-encoded from canonical tx data and
+        // compared against the stored blob, so blobs corrupted by an older
+        // encoder are rewritten. Otherwise we only fill missing heights (cheap:
+        // trust existing blobs without re-reading tx data). The pass runs once
+        // per version, gated by an operation-state marker.
+        const repairState = await this.storageService.getOperationState(
+            SILENT_BLOCK_REPAIR_STATE,
+        );
+        const repair =
+            (repairState?.state?.version ?? 0) < SILENT_BLOCK_REPAIR_VERSION;
+
+        let written = 0;
+
+        for (let h = startHeight; h <= tipHeight; h += BACKFILL_BATCH_SIZE) {
+            const batchEnd = Math.min(h + BACKFILL_BATCH_SIZE - 1, tipHeight);
+            const existingBlobs = this.storageService.getSilentBlocksRange(
+                h,
+                batchEnd,
+            );
+            const existingByHeight = new Map(
+                existingBlobs.map((b) => [b.height, b.blob]),
+            );
+
+            const pending: { height: number; blob: Buffer }[] = [];
+            for (let height = h; height <= batchEnd; height++) {
+                const existing = existingByHeight.get(height);
+
+                // Gap-fill mode trusts a present blob and skips re-encoding.
+                if (existing && !repair) continue;
+
+                const txs =
+                    await this.storageService.getTransactionsByBlockHeight(
+                        height,
+                        false,
+                    );
+                const fresh = encodeSilentBlock(txs);
+
+                if (!existing || !existing.equals(fresh)) {
+                    pending.push({ height, blob: fresh });
+                }
+            }
+
+            if (pending.length === 0) continue;
+
+            await this.dbTransactionService.execute(async (batch) => {
+                for (const { height, blob } of pending) {
+                    this.storageService.saveSilentBlock(batch, height, blob);
+                    written++;
+                }
+            });
+        }
+
+        // Mark the repair done only after a full successful pass; a crash
+        // mid-repair leaves the marker unset so it re-runs (idempotent).
+        if (repair) {
+            const batch = this.storageService.createBatch();
+            this.storageService.saveOperationState(
+                batch,
+                SILENT_BLOCK_REPAIR_STATE,
+                { version: SILENT_BLOCK_REPAIR_VERSION },
+            );
+            await batch.commit();
+        }
+
+        if (written > 0) {
+            this.logger.log(
+                `Silent block backfill complete: ${written} blobs ${
+                    repair ? 'written/repaired' : 'written'
+                }`,
+            );
+        }
+    }
 
     @OnEvent(INDEXED_BLOCK_EVENT)
     async handleBlockIndexedEvent(blockHeight: number) {
@@ -28,51 +126,22 @@ export class SilentBlocksService {
         this.silentBlocksGateway.broadcastSilentBlock(silentBlock);
     }
 
-    private getSilentBlockLength(transactions: TransactionData[]): number {
-        let length = 1 + varIntSize(transactions.length); // 1 byte for type + varint for transactions count
-
-        for (const tx of transactions) {
-            length +=
-                65 + varIntSize(tx.outputs.length) + tx.outputs.length * 44; // 32 + varint for output count + 44 per output + 33
-        }
-
-        return length;
-    }
-
-    public encodeSilentBlock(transactions: TransactionData[]): Buffer {
-        const block = Buffer.alloc(this.getSilentBlockLength(transactions));
-        let cursor = 0;
-
-        cursor = block.writeUInt8(SILENT_PAYMENT_BLOCK_TYPE, cursor);
-        cursor = encodeVarInt(transactions.length, block, cursor);
-
-        for (const tx of transactions) {
-            cursor += block.write(tx.id, cursor, 32, 'hex');
-            cursor = encodeVarInt(tx.outputs.length, block, cursor);
-
-            for (const output of tx.outputs) {
-                cursor = block.writeBigUInt64BE(BigInt(output.value), cursor);
-                cursor += block.write(output.pubKey, cursor, 32, 'hex');
-                cursor = block.writeUInt32BE(output.vout, cursor);
-            }
-
-            cursor += block.write(tx.scanTweak, cursor, 33, 'hex');
-        }
-
-        return block;
-    }
-
     async getSilentBlockByHeight(
         blockHeight: number,
         filterSpent: boolean,
     ): Promise<Buffer> {
+        if (!filterSpent) {
+            const blob = this.storageService.getSilentBlock(blockHeight);
+            if (blob) return blob;
+        }
+
         const transactions =
             await this.transactionsService.getTransactionByBlockHeight(
                 blockHeight,
                 filterSpent,
             );
 
-        return this.encodeSilentBlock(transactions);
+        return encodeSilentBlock(transactions);
     }
 
     async getSilentBlockByHash(
@@ -85,7 +154,36 @@ export class SilentBlocksService {
                 filterSpent,
             );
 
-        return this.encodeSilentBlock(transactions);
+        return encodeSilentBlock(transactions);
+    }
+
+    /**
+     * Returns a framed binary buffer containing silent blocks for each height in
+     * [startHeight, endHeight]. Each frame: height (4B BE) | byteLength (4B BE) | silentBlockBytes.
+     */
+    async getSilentBlocksRange(
+        startHeight: number,
+        endHeight: number,
+    ): Promise<Buffer> {
+        const blobs = this.storageService.getSilentBlocksRange(
+            startHeight,
+            endHeight,
+        );
+
+        const blobsByHeight = new Map(blobs.map((b) => [b.height, b.blob]));
+        const frames: Buffer[] = [];
+
+        for (let h = startHeight; h <= endHeight; h++) {
+            const blob =
+                blobsByHeight.get(h) ??
+                (await this.getSilentBlockByHeight(h, false));
+            const header = Buffer.alloc(8);
+            header.writeUInt32BE(h, 0);
+            header.writeUInt32BE(blob.length, 4);
+            frames.push(header, blob);
+        }
+
+        return Buffer.concat(frames);
     }
 
     async getLatestIndexedBlockHeight(): Promise<number> {

@@ -10,6 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import { BlockStateService } from '@/block-state/block-state.service';
 import { BatchWriter } from '@/storage/batch-writer';
 import { StorageService } from '@/storage/storage.service';
+import { TransactionData } from '@/storage/interfaces';
 
 export abstract class BaseBlockDataProvider<OperationState> {
     protected readonly eventEmitter: EventEmitter2 = new EventEmitter2();
@@ -32,7 +33,10 @@ export abstract class BaseBlockDataProvider<OperationState> {
         blockHash: string,
         blockTime: number,
         batch: BatchWriter,
-    ): Promise<Map<string, { pubKey: string; value: number }>> {
+    ): Promise<{
+        pendingOutputs: Map<string, { pubKey: string; value: number }>;
+        txData: TransactionData | null;
+    }> {
         return this.indexerService.index(
             txid,
             vin,

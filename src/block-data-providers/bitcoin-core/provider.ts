@@ -32,6 +32,8 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { INDEXED_BLOCK_EVENT } from '@/common/events';
 import { btcToSats } from '@/common/common';
 import { StorageService } from '@/storage/storage.service';
+import { encodeSilentBlock } from '@/silent-blocks/silent-block-encoder';
+import { TransactionData } from '@/storage/interfaces';
 
 @Injectable()
 export class BitcoinCoreProvider
@@ -140,11 +142,12 @@ export class BitcoinCoreProvider
                         string,
                         { pubKey: string; value: number }
                     >();
+                    const blockTxData: TransactionData[] = [];
 
                     for (const transaction of transactions) {
                         const { txid, vin, vout, blockHeight, blockHash } =
                             transaction;
-                        const saved = await this.indexTransaction(
+                        const result = await this.indexTransaction(
                             txid,
                             vin,
                             vout,
@@ -154,9 +157,10 @@ export class BitcoinCoreProvider
                             batch,
                         );
 
-                        for (const [k, v] of saved) {
+                        for (const [k, v] of result.pendingOutputs) {
                             pendingOutputs.set(k, v);
                         }
+                        if (result.txData) blockTxData.push(result.txData);
 
                         for (const input of vin) {
                             spentOutpoints.push([input.txid, input.vout]);
@@ -167,6 +171,12 @@ export class BitcoinCoreProvider
                         batch,
                         spentOutpoints,
                         pendingOutputs,
+                    );
+
+                    this.storageService.saveSilentBlock(
+                        batch,
+                        height,
+                        encodeSilentBlock(blockTxData),
                     );
 
                     state.indexedBlockHeight = height;

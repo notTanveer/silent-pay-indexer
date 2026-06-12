@@ -8,6 +8,7 @@ const PREFIX = {
     UNSPENT_IDX: Buffer.from('idx:us:'),
     BLOCK_STATE: Buffer.from('bs:'),
     OP_STATE: Buffer.from('os:'),
+    SILENT_BLOCK: Buffer.from('sb:'),
 } as const;
 
 // --- Key encoders ---
@@ -314,5 +315,30 @@ export function timeIndexSeek(timestamp: number): {
     return {
         gte: Buffer.concat([PREFIX.TIME_IDX, timeBuf]),
         lt: prefixUpperBound(PREFIX.TIME_IDX),
+    };
+}
+
+export function encodeSilentBlockKey(height: number): Buffer {
+    const heightBuf = Buffer.alloc(4);
+    heightBuf.writeUInt32BE(height);
+    return Buffer.concat([PREFIX.SILENT_BLOCK, heightBuf]);
+}
+
+export function decodeSilentBlockKey(key: Buffer): number {
+    return key.readUInt32BE(PREFIX.SILENT_BLOCK.length);
+}
+
+/** Silent block span range: all blobs across [startHeight, endHeight] */
+export function silentBlockSpanRange(
+    startHeight: number,
+    endHeight: number,
+): { gte: Buffer; lt: Buffer } {
+    const startBuf = Buffer.alloc(4);
+    startBuf.writeUInt32BE(startHeight);
+    const endBuf = Buffer.alloc(4);
+    endBuf.writeUInt32BE(endHeight + 1);
+    return {
+        gte: Buffer.concat([PREFIX.SILENT_BLOCK, startBuf]),
+        lt: Buffer.concat([PREFIX.SILENT_BLOCK, endBuf]),
     };
 }
