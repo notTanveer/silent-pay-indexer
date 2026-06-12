@@ -129,15 +129,15 @@ export const encodeVarInt = (
         return offset + 1;
     } else if (value <= 0xffff) {
         buffer.writeUInt8(0xfd, offset);
-        buffer.writeUInt16LE(value, offset + 2);
+        buffer.writeUInt16LE(value, offset + 1);
         return offset + 3;
     } else if (value <= 0xffffffff) {
         buffer.writeUInt8(0xfe, offset);
-        buffer.writeUInt32LE(value, offset + 4);
+        buffer.writeUInt32LE(value, offset + 1);
         return offset + 5;
     } else {
         buffer.writeUInt8(0xff, offset);
-        buffer.writeBigUInt64LE(BigInt(value), offset + 8);
+        buffer.writeBigUInt64LE(BigInt(value), offset + 1);
         return offset + 9;
     }
 };
