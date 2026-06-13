@@ -132,9 +132,19 @@ export class BitcoinCoreProvider
             let height =
                 ((await this.traceReorg()) ?? state.indexedBlockHeight) + 1;
 
+            let nextBlock: Promise<{
+                transactions: Transaction[];
+                blockHash: string;
+                blockTime: number;
+            }> | null = this.processBlock(height, verbosityLevel);
+
             for (height; height <= tipHeight; height++) {
-                const { transactions, blockHash, blockTime } =
-                    await this.processBlock(height, verbosityLevel);
+                const { transactions, blockHash, blockTime } = await nextBlock;
+
+                nextBlock =
+                    height + 1 <= tipHeight
+                        ? this.processBlock(height + 1, verbosityLevel)
+                        : null;
 
                 await this.dbTransactionService.execute(async (batch) => {
                     const spentOutpoints: [string, number][] = [];
