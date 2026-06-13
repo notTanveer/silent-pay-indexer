@@ -10,6 +10,7 @@ import {
     Res,
     UseInterceptors,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { Response } from 'express';
 import { SilentBlocksService } from '@/silent-blocks/silent-blocks.service';
 import { MAX_SILENT_BLOCK_RANGE } from '@/common/constants';
@@ -58,6 +59,7 @@ export class SilentBlocksController {
         res.send(buffer);
     }
 
+    @SkipThrottle()
     @Get('range')
     async getSilentBlocksRange(
         @Query('startHeight', ParseIntPipe) startHeight: number,
