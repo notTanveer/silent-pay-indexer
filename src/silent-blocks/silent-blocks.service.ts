@@ -186,6 +186,28 @@ export class SilentBlocksService implements OnModuleInit {
         return Buffer.concat(frames);
     }
 
+    async *streamSilentBlocksRange(
+        startHeight: number,
+        endHeight: number,
+    ): AsyncGenerator<Buffer> {
+        const blobs = this.storageService.getSilentBlocksRange(
+            startHeight,
+            endHeight,
+        );
+
+        const blobsByHeight = new Map(blobs.map((b) => [b.height, b.blob]));
+
+        for (let h = startHeight; h <= endHeight; h++) {
+            const blob =
+                blobsByHeight.get(h) ??
+                (await this.getSilentBlockByHeight(h, false));
+            const header = Buffer.alloc(8);
+            header.writeUInt32BE(h, 0);
+            header.writeUInt32BE(blob.length, 4);
+            yield Buffer.concat([header, blob]);
+        }
+    }
+
     async getLatestIndexedBlockHeight(): Promise<number> {
         const currentBlockState =
             await this.blockStateService.getCurrentBlockState();

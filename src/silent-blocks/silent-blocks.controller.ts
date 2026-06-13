@@ -82,20 +82,22 @@ export class SilentBlocksController {
         const latestHeight =
             await this.silentBlocksService.getLatestIndexedBlockHeight();
 
-        const buffer = await this.silentBlocksService.getSilentBlocksRange(
-            startHeight,
-            endHeight,
-        );
-
         const isDeepRange = endHeight <= latestHeight - 6;
         res.set({
             'Content-Type': 'application/octet-stream',
-            'Content-Length': buffer.length,
+            'Transfer-Encoding': 'chunked',
             'Cache-Control': isDeepRange
                 ? 'public, max-age=31536000, immutable'
                 : 'no-store',
         });
-        res.send(buffer);
+
+        for await (const frame of this.silentBlocksService.streamSilentBlocksRange(
+            startHeight,
+            endHeight,
+        )) {
+            res.write(frame);
+        }
+        res.end();
     }
 
     @Get('latest-height')
