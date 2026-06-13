@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { CacheModule } from '@nestjs/cache-manager';
+import { CacheInterceptor } from '@nestjs/cache-manager';
 import { SilentBlocksController } from '@/silent-blocks/silent-blocks.controller';
 import { SilentBlocksService } from '@/silent-blocks/silent-blocks.service';
 import { THROTTLER_SKIP } from '@nestjs/throttler/dist/throttler.constants';
@@ -33,5 +34,29 @@ describe('SilentBlocksController', () => {
             controller.getSilentBlocksRange,
         );
         expect(metadata).toBe(true);
+    });
+
+    it('should NOT have CacheInterceptor on getSilentBlockByHeight', () => {
+        const interceptors = Reflect.getMetadata(
+            '__interceptors__',
+            controller.getSilentBlockByHeight,
+        );
+        const hasCacheInterceptor = (interceptors ?? []).some(
+            (i: any) =>
+                i === CacheInterceptor || i?.name === 'CacheInterceptor',
+        );
+        expect(hasCacheInterceptor).toBe(false);
+    });
+
+    it('should NOT have CacheInterceptor on getSilentBlockByHash', () => {
+        const interceptors = Reflect.getMetadata(
+            '__interceptors__',
+            controller.getSilentBlockByHash,
+        );
+        const hasCacheInterceptor = (interceptors ?? []).some(
+            (i: any) =>
+                i === CacheInterceptor || i?.name === 'CacheInterceptor',
+        );
+        expect(hasCacheInterceptor).toBe(false);
     });
 });

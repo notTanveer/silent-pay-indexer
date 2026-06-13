@@ -20,7 +20,6 @@ export class SilentBlocksController {
     constructor(private readonly silentBlocksService: SilentBlocksService) {}
 
     @Get('height/:height')
-    @UseInterceptors(CacheInterceptor)
     async getSilentBlockByHeight(
         @Param('height') blockHeight: number,
         @Res() res: Response,
@@ -35,12 +34,14 @@ export class SilentBlocksController {
         res.set({
             'Content-Type': 'application/octet-stream',
             'Content-Length': buffer.length,
+            'Cache-Control': filterSpent
+                ? 'no-store'
+                : 'public, max-age=31536000, immutable',
         });
         res.send(buffer);
     }
 
     @Get('hash/:hash')
-    @UseInterceptors(CacheInterceptor)
     async getSilentBlockByHash(
         @Param('hash') blockHash: string,
         @Res() res: Response,
@@ -55,6 +56,9 @@ export class SilentBlocksController {
         res.set({
             'Content-Type': 'application/octet-stream',
             'Content-Length': buffer.length,
+            'Cache-Control': filterSpent
+                ? 'no-store'
+                : 'public, max-age=31536000, immutable',
         });
         res.send(buffer);
     }
