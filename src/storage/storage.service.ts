@@ -78,8 +78,7 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
     // --- Low-level helpers ---
 
     private get(key: Buffer): Buffer | null {
-        const val = this.db.getBinary(key);
-        return val ? Buffer.from(val) : null;
+        return this.db.getBinary(key) ?? null;
     }
 
     private collectRange<T>(
@@ -96,9 +95,7 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
             limit: opts.limit,
         });
         for (const { key, value } of range) {
-            results.push(
-                decode(Buffer.from(key as any), Buffer.from(value as any)),
-            );
+            results.push(decode(key as Buffer, value as Buffer));
         }
         return results;
     }

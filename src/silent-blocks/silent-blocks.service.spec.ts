@@ -154,6 +154,49 @@ describe('SilentBlocksService', () => {
         expect(encodedBlock.toString('hex')).toEqual('0000');
     });
 
+    it('should return correct framed data from getSilentBlocksRange', async () => {
+        const fixture = silentBlockEncodingFixture[0];
+
+        const batch = storageService.createBatch();
+        for (const tx of fixture.transactions) {
+            storageService.saveTransaction(batch, {
+                ...tx,
+                outputs: tx.outputs.map((o) => ({
+                    ...o,
+                    transactionId: tx.id,
+                })),
+            });
+        }
+        storageService.saveSilentBlock(
+            batch,
+            fixture.blockHeight,
+            Buffer.from(fixture.encodedBlockHex, 'hex'),
+        );
+        storageService.saveBlockState(batch, {
+            blockHeight: fixture.blockHeight,
+            blockHash: fixture.blockHash,
+        });
+        await batch.commit();
+
+        blockStateService.getCurrentBlockState.mockResolvedValue({
+            blockHeight: fixture.blockHeight,
+            blockHash: fixture.blockHash,
+        });
+
+        const result = await service.getSilentBlocksRange(
+            fixture.blockHeight,
+            fixture.blockHeight,
+        );
+
+        // Parse the frame: height (4B) + length (4B) + blob
+        const frameHeight = result.readUInt32BE(0);
+        const frameLength = result.readUInt32BE(4);
+        const frameBlob = result.subarray(8, 8 + frameLength);
+
+        expect(frameHeight).toBe(fixture.blockHeight);
+        expect(frameBlob.toString('hex')).toBe(fixture.encodedBlockHex);
+    });
+
     it('should repair a corrupt silent block blob during backfill', async () => {
         const fixture = silentBlockEncodingFixture[0];
         const { blockHeight, blockHash, encodedBlockHex } = fixture;
