@@ -128,11 +128,19 @@ export class EsploraProvider
             let height =
                 ((await this.traceReorg()) ?? state.indexedBlockHeight) + 1;
 
+            let nextBlockHash: Promise<string> | null =
+                this.getBlockHash(height);
+
             for (height; height <= tipHeight; height++) {
-                const blockHash = await this.getBlockHash(height);
+                const blockHash = await nextBlockHash;
                 this.logger.log(
                     `Processing block at height ${height}, hash ${blockHash}`,
                 );
+
+                nextBlockHash =
+                    height + 1 <= tipHeight
+                        ? this.getBlockHash(height + 1)
+                        : null;
 
                 await this.processBlock(height, blockHash);
             }
