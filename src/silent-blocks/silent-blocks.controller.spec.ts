@@ -17,6 +17,7 @@ describe('SilentBlocksController', () => {
                     provide: SilentBlocksService,
                     useValue: {
                         getSilentBlocksRange: jest.fn(),
+                        streamSilentBlocksRange: jest.fn(),
                         getSilentBlockByHeight: jest.fn(),
                         getSilentBlockByHash: jest.fn(),
                         getLatestIndexedBlockHeight: jest.fn(),
