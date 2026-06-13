@@ -154,7 +154,7 @@ describe('SilentBlocksService', () => {
         expect(encodedBlock.toString('hex')).toEqual('0000');
     });
 
-    it('should return correct framed data from getSilentBlocksRange', async () => {
+    it('should return correct framed data from streamSilentBlocksRange', async () => {
         const fixture = silentBlockEncodingFixture[0];
 
         const batch = storageService.createBatch();
@@ -183,12 +183,16 @@ describe('SilentBlocksService', () => {
             blockHash: fixture.blockHash,
         });
 
-        const result = await service.getSilentBlocksRange(
+        const frames: Buffer[] = [];
+        for await (const frame of service.streamSilentBlocksRange(
             fixture.blockHeight,
             fixture.blockHeight,
-        );
+        )) {
+            frames.push(frame);
+        }
 
-        // Parse the frame: height (4B) + length (4B) + blob
+        expect(frames.length).toBe(1);
+        const result = frames[0];
         const frameHeight = result.readUInt32BE(0);
         const frameLength = result.readUInt32BE(4);
         const frameBlob = result.subarray(8, 8 + frameLength);

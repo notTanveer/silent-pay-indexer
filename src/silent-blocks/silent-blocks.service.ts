@@ -157,35 +157,6 @@ export class SilentBlocksService implements OnModuleInit {
         return encodeSilentBlock(transactions);
     }
 
-    /**
-     * Returns a framed binary buffer containing silent blocks for each height in
-     * [startHeight, endHeight]. Each frame: height (4B BE) | byteLength (4B BE) | silentBlockBytes.
-     */
-    async getSilentBlocksRange(
-        startHeight: number,
-        endHeight: number,
-    ): Promise<Buffer> {
-        const blobs = this.storageService.getSilentBlocksRange(
-            startHeight,
-            endHeight,
-        );
-
-        const blobsByHeight = new Map(blobs.map((b) => [b.height, b.blob]));
-        const frames: Buffer[] = [];
-
-        for (let h = startHeight; h <= endHeight; h++) {
-            const blob =
-                blobsByHeight.get(h) ??
-                (await this.getSilentBlockByHeight(h, false));
-            const header = Buffer.alloc(8);
-            header.writeUInt32BE(h, 0);
-            header.writeUInt32BE(blob.length, 4);
-            frames.push(header, blob);
-        }
-
-        return Buffer.concat(frames);
-    }
-
     async *streamSilentBlocksRange(
         startHeight: number,
         endHeight: number,
