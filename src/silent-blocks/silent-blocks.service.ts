@@ -7,6 +7,7 @@ import { BlockStateService } from '@/block-state/block-state.service';
 import { StorageService } from '@/storage/storage.service';
 import { DbTransactionService } from '@/db-transaction/db-transaction.service';
 import { encodeSilentBlock } from '@/silent-blocks/silent-block-encoder';
+import { TransactionData } from '@/storage/interfaces';
 
 const BACKFILL_BATCH_SIZE = 100;
 
@@ -160,18 +161,48 @@ export class SilentBlocksService implements OnModuleInit {
     async *streamSilentBlocksRange(
         startHeight: number,
         endHeight: number,
+        filterSpent = false,
     ): AsyncGenerator<Buffer> {
-        const blobs = this.storageService.getSilentBlocksRange(
-            startHeight,
-            endHeight,
-        );
+        // filterSpent=false: serve from blob store, fall back per-height on miss.
+        // filterSpent=true:  bulk-fetch all txs in one range scan, group by height,
+        //                    encode per block — avoids N individual DB reads.
+        const blobsByHeight = new Map<number, Buffer>();
 
-        const blobsByHeight = new Map(blobs.map((b) => [b.height, b.blob]));
+        if (!filterSpent) {
+            const blobs = this.storageService.getSilentBlocksRange(
+                startHeight,
+                endHeight,
+            );
+            for (const { height, blob } of blobs) {
+                blobsByHeight.set(height, blob);
+            }
+        } else {
+            const txs =
+                await this.transactionsService.getTransactionsByBlockHeightRange(
+                    startHeight,
+                    endHeight,
+                    true,
+                );
+            // Group transactions by block height
+            const txsByHeight = new Map<number, TransactionData[]>();
+            for (const tx of txs) {
+                const list = txsByHeight.get(tx.blockHeight) ?? [];
+                list.push(tx);
+                txsByHeight.set(tx.blockHeight, list);
+            }
+            // Pre-encode all blobs so the loop below is uniform
+            for (const [height, blockTxs] of txsByHeight) {
+                blobsByHeight.set(height, encodeSilentBlock(blockTxs));
+            }
+        }
 
         for (let h = startHeight; h <= endHeight; h++) {
+            // filterSpent=false: cache miss falls back to single-height fetch.
+            // filterSpent=true:  heights absent from the map have no unspent
+            //                    outputs; getSilentBlockByHeight encodes an empty block.
             const blob =
                 blobsByHeight.get(h) ??
-                (await this.getSilentBlockByHeight(h, false));
+                (await this.getSilentBlockByHeight(h, filterSpent));
             const header = Buffer.alloc(8);
             header.writeUInt32BE(h, 0);
             header.writeUInt32BE(blob.length, 4);

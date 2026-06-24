@@ -69,6 +69,8 @@ export class SilentBlocksController {
         @Query('startHeight', ParseIntPipe) startHeight: number,
         @Query('endHeight', ParseIntPipe) endHeight: number,
         @Res() res: Response,
+        @Query('filterSpent', new ParseBoolPipe({ optional: true }))
+        filterSpent = false,
     ) {
         if (endHeight < startHeight) {
             throw new BadRequestException('endHeight must be >= startHeight');
@@ -82,7 +84,9 @@ export class SilentBlocksController {
         const latestHeight =
             await this.silentBlocksService.getLatestIndexedBlockHeight();
 
-        const isDeepRange = endHeight <= latestHeight - 6;
+        // filterSpent responses are always live — never cache them
+        const isDeepRange =
+            !filterSpent && endHeight <= latestHeight - 6;
         res.set({
             'Content-Type': 'application/octet-stream',
             'Transfer-Encoding': 'chunked',
@@ -94,6 +98,7 @@ export class SilentBlocksController {
         for await (const frame of this.silentBlocksService.streamSilentBlocksRange(
             startHeight,
             endHeight,
+            filterSpent,
         )) {
             res.write(frame);
         }
