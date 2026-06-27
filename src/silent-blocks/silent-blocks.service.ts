@@ -1,4 +1,10 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import {
+    forwardRef,
+    Inject,
+    Injectable,
+    Logger,
+    OnModuleInit,
+} from '@nestjs/common';
 import { TransactionsService } from '@/transactions/transactions.service';
 import { SilentBlocksGateway } from '@/silent-blocks/silent-blocks.gateway';
 import { OnEvent } from '@nestjs/event-emitter';
@@ -10,6 +16,11 @@ import { encodeSilentBlock } from '@/silent-blocks/silent-block-encoder';
 import { TransactionData } from '@/storage/interfaces';
 
 const BACKFILL_BATCH_SIZE = 100;
+
+// Heights processed per DB scan inside streamSilentBlocksRange. Small enough that
+// the first frame is emitted quickly (low TTFB, keeps the proxy connection warm),
+// large enough to amortise the range-scan cost.
+const SILENT_BLOCK_STREAM_SUB_BATCH = 20;
 
 // Operation-state id + version gating the one-time repair pass. Bump the
 // version whenever a fix to the silent block encoding requires existing
@@ -23,6 +34,7 @@ export class SilentBlocksService implements OnModuleInit {
 
     constructor(
         private readonly transactionsService: TransactionsService,
+        @Inject(forwardRef(() => SilentBlocksGateway))
         private readonly silentBlocksGateway: SilentBlocksGateway,
         private readonly blockStateService: BlockStateService,
         private readonly storageService: StorageService,
@@ -163,50 +175,65 @@ export class SilentBlocksService implements OnModuleInit {
         endHeight: number,
         filterSpent = false,
     ): AsyncGenerator<Buffer> {
-        // filterSpent=false: serve from blob store, fall back per-height on miss.
-        // filterSpent=true:  bulk-fetch all txs in one range scan, group by height,
-        //                    encode per block — avoids N individual DB reads.
-        const blobsByHeight = new Map<number, Buffer>();
-
-        if (!filterSpent) {
-            const blobs = this.storageService.getSilentBlocksRange(
-                startHeight,
+        // Emit incrementally in small sub-batches rather than scanning the whole
+        // span up front. The first frame leaves the origin after one sub-batch
+        // (~tens of ms) instead of after the entire range, which keeps the proxy
+        // connection fed (no idle-timeout 502s on filterSpent ranges) and lets the
+        // client pipeline against its scan. Frame bytes are identical either way.
+        for (
+            let batchStart = startHeight;
+            batchStart <= endHeight;
+            batchStart += SILENT_BLOCK_STREAM_SUB_BATCH
+        ) {
+            const batchEnd = Math.min(
+                batchStart + SILENT_BLOCK_STREAM_SUB_BATCH - 1,
                 endHeight,
             );
-            for (const { height, blob } of blobs) {
-                blobsByHeight.set(height, blob);
-            }
-        } else {
-            const txs =
-                await this.transactionsService.getTransactionsByBlockHeightRange(
-                    startHeight,
-                    endHeight,
-                    true,
-                );
-            // Group transactions by block height
-            const txsByHeight = new Map<number, TransactionData[]>();
-            for (const tx of txs) {
-                const list = txsByHeight.get(tx.blockHeight) ?? [];
-                list.push(tx);
-                txsByHeight.set(tx.blockHeight, list);
-            }
-            // Pre-encode all blobs so the loop below is uniform
-            for (const [height, blockTxs] of txsByHeight) {
-                blobsByHeight.set(height, encodeSilentBlock(blockTxs));
-            }
-        }
 
-        for (let h = startHeight; h <= endHeight; h++) {
-            // filterSpent=false: cache miss falls back to single-height fetch.
-            // filterSpent=true:  heights absent from the map have no unspent
-            //                    outputs; getSilentBlockByHeight encodes an empty block.
-            const blob =
-                blobsByHeight.get(h) ??
-                (await this.getSilentBlockByHeight(h, filterSpent));
-            const header = Buffer.alloc(8);
-            header.writeUInt32BE(h, 0);
-            header.writeUInt32BE(blob.length, 4);
-            yield Buffer.concat([header, blob]);
+            // filterSpent=false: serve from blob store, fall back per-height on miss.
+            // filterSpent=true:  bulk-fetch the sub-batch's txs in one range scan,
+            //                    group by height, encode per block.
+            const blobsByHeight = new Map<number, Buffer>();
+
+            if (!filterSpent) {
+                const blobs = this.storageService.getSilentBlocksRange(
+                    batchStart,
+                    batchEnd,
+                );
+                for (const { height, blob } of blobs) {
+                    blobsByHeight.set(height, blob);
+                }
+            } else {
+                const txs =
+                    await this.transactionsService.getTransactionsByBlockHeightRange(
+                        batchStart,
+                        batchEnd,
+                        true,
+                    );
+                // Group transactions by block height
+                const txsByHeight = new Map<number, TransactionData[]>();
+                for (const tx of txs) {
+                    const list = txsByHeight.get(tx.blockHeight) ?? [];
+                    list.push(tx);
+                    txsByHeight.set(tx.blockHeight, list);
+                }
+                for (const [height, blockTxs] of txsByHeight) {
+                    blobsByHeight.set(height, encodeSilentBlock(blockTxs));
+                }
+            }
+
+            for (let h = batchStart; h <= batchEnd; h++) {
+                // filterSpent=false: cache miss falls back to single-height fetch.
+                // filterSpent=true:  heights absent from the map have no unspent
+                //                    outputs; getSilentBlockByHeight encodes an empty block.
+                const blob =
+                    blobsByHeight.get(h) ??
+                    (await this.getSilentBlockByHeight(h, filterSpent));
+                const header = Buffer.alloc(8);
+                header.writeUInt32BE(h, 0);
+                header.writeUInt32BE(blob.length, 4);
+                yield Buffer.concat([header, blob]);
+            }
         }
     }
 
