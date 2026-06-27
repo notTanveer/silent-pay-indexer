@@ -85,8 +85,7 @@ export class SilentBlocksController {
             await this.silentBlocksService.getLatestIndexedBlockHeight();
 
         // filterSpent responses are always live — never cache them
-        const isDeepRange =
-            !filterSpent && endHeight <= latestHeight - 6;
+        const isDeepRange = !filterSpent && endHeight <= latestHeight - 6;
         res.set({
             'Content-Type': 'application/octet-stream',
             'Transfer-Encoding': 'chunked',

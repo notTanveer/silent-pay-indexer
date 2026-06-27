@@ -109,6 +109,11 @@ export class SilentBlocksGateway
         }
     }
 
+    @SubscribeMessage('ping')
+    handlePing(@ConnectedSocket() client: WebSocket): void {
+        this.sendControl(client, 'pong', null);
+    }
+
     broadcastSilentBlock(silentBlock: Buffer) {
         for (const client of this.server.clients) {
             if (client.readyState === WebSocket.OPEN) {
