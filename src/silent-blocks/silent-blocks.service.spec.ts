@@ -234,6 +234,47 @@ describe('SilentBlocksService', () => {
         expect(frame.subarray(8)).toEqual(blob);
     });
 
+    it('should skip empty heights in streamSilentBlocksRange', async () => {
+        const fixture = silentBlockEncodingFixture[0];
+        const nonEmptyHeight = fixture.blockHeight;
+        const emptyHeightBefore = nonEmptyHeight - 1;
+        const emptyHeightAfter = nonEmptyHeight + 1;
+
+        const batch = storageService.createBatch();
+        // Store a non-empty blob for one height.
+        storageService.saveSilentBlock(
+            batch,
+            nonEmptyHeight,
+            Buffer.from(fixture.encodedBlockHex, 'hex'),
+        );
+        // Store explicit empty blobs (type + varint(0) = 2 bytes) for neighbour heights.
+        const emptyBlob = Buffer.from([0x00, 0x00]);
+        storageService.saveSilentBlock(batch, emptyHeightBefore, emptyBlob);
+        storageService.saveSilentBlock(batch, emptyHeightAfter, emptyBlob);
+        storageService.saveBlockState(batch, {
+            blockHeight: emptyHeightAfter,
+            blockHash: fixture.blockHash,
+        });
+        await batch.commit();
+
+        blockStateService.getCurrentBlockState.mockResolvedValue({
+            blockHeight: emptyHeightAfter,
+            blockHash: fixture.blockHash,
+        });
+
+        const frames: Buffer[] = [];
+        for await (const frame of service.streamSilentBlocksRange(
+            emptyHeightBefore,
+            emptyHeightAfter,
+        )) {
+            frames.push(frame);
+        }
+
+        // Only the non-empty height should produce a frame.
+        expect(frames.length).toBe(1);
+        expect(frames[0].readUInt32BE(0)).toBe(nonEmptyHeight);
+    });
+
     it('should repair a corrupt silent block blob during backfill', async () => {
         const fixture = silentBlockEncodingFixture[0];
         const { blockHeight, blockHash, encodedBlockHex } = fixture;
