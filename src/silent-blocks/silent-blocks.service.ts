@@ -20,7 +20,7 @@ const BACKFILL_BATCH_SIZE = 100;
 // Heights processed per DB scan inside streamSilentBlocksRange. Small enough that
 // the first frame is emitted quickly (low TTFB, keeps the proxy connection warm),
 // large enough to amortise the range-scan cost.
-const SILENT_BLOCK_STREAM_SUB_BATCH = 200;
+const SILENT_BLOCK_STREAM_SUB_BATCH = 20;
 
 // Operation-state id + version gating the one-time repair pass. Bump the
 // version whenever a fix to the silent block encoding requires existing
