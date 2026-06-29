@@ -223,12 +223,24 @@ export class SilentBlocksService implements OnModuleInit {
             }
 
             for (let h = batchStart; h <= batchEnd; h++) {
-                // filterSpent=false: cache miss falls back to single-height fetch.
-                // filterSpent=true:  heights absent from the map have no unspent
-                //                    outputs; getSilentBlockByHeight encodes an empty block.
-                const blob =
-                    blobsByHeight.get(h) ??
-                    (await this.getSilentBlockByHeight(h, filterSpent));
+                let blob = blobsByHeight.get(h);
+
+                if (!blob) {
+                    if (filterSpent) {
+                        // filterSpent=true: blobsByHeight is built from txsByHeight
+                        // which only contains heights with unspent SP outputs. Absent
+                        // means nothing to scan — skip the frame entirely.
+                        continue;
+                    }
+                    // filterSpent=false: blob store miss; fall back to single-height fetch.
+                    blob = await this.getSilentBlockByHeight(h, filterSpent);
+                }
+
+                // An empty silent block encodes to exactly 2 bytes (type + varint(0)).
+                // Sending it wastes bandwidth and forces a client microtask per block;
+                // the client learns the range was clean from the final `synced` ACK.
+                if (blob.length <= 2) continue;
+
                 const header = Buffer.alloc(8);
                 header.writeUInt32BE(h, 0);
                 header.writeUInt32BE(blob.length, 4);
