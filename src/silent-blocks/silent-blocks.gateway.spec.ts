@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { WebSocket } from 'ws';
 import { SilentBlocksGateway } from '@/silent-blocks/silent-blocks.gateway';
 import { SilentBlocksService } from '@/silent-blocks/silent-blocks.service';
@@ -98,6 +99,34 @@ describe('SilentBlocksGateway sync stream', () => {
         const { frames, controls } = classify(client.send as jest.Mock);
         expect(frames).toHaveLength(0);
         expect(controls[0].event).toBe('error');
+    });
+
+    it('terminates a client that never drains, without acking', async () => {
+        jest.useFakeTimers();
+        jest.spyOn(Logger.prototype, 'warn').mockImplementation(
+            () => undefined,
+        );
+        try {
+            const gateway = new SilentBlocksGateway(serviceStub(1000));
+            const client = fakeClient({
+                bufferedAmount: 8 * 1024 * 1024, // pinned above MAX_BUFFERED_BYTES
+            }) as any;
+            // Mirror ws: terminate() leaves the socket no longer OPEN.
+            client.terminate = jest.fn(() => {
+                client.readyState = WebSocket.CLOSED;
+            });
+
+            const done = gateway.handleSync(client, { from: 100, to: 200 });
+            await jest.advanceTimersByTimeAsync(61_000);
+            await done;
+
+            expect(client.terminate).toHaveBeenCalled();
+            // Stalled before the first send, so no frames and no `synced` ack.
+            expect(client.send).not.toHaveBeenCalled();
+        } finally {
+            jest.useRealTimers();
+            jest.restoreAllMocks();
+        }
     });
 
     it('stops sending once the socket is no longer open', async () => {

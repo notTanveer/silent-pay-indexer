@@ -15,6 +15,11 @@ import { SilentBlocksService } from '@/silent-blocks/silent-blocks.service';
 // slow client can't make the server buffer the whole range in memory.
 const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 
+// A client that drains nothing at all for this long is treated as dead. Any
+// progress at all drops it under the threshold, so this only catches sockets
+// the kernel has not yet given up on (half-open connections retry for minutes).
+const STALL_TIMEOUT_MS = 60_000;
+
 interface SyncRequest {
     from?: number;
     to?: number;
@@ -144,12 +149,25 @@ export class SilentBlocksGateway
         }
     }
 
+    // The deadline is per call, so a slow-but-progressing client gets a fresh
+    // budget for every frame; only a total stall runs it out.
     private async awaitDrain(client: WebSocket): Promise<void> {
+        const deadline = Date.now() + STALL_TIMEOUT_MS;
+        let delay = 5;
+
         while (
             client.readyState === WebSocket.OPEN &&
             client.bufferedAmount > MAX_BUFFERED_BYTES
         ) {
-            await new Promise((resolve) => setTimeout(resolve, 5));
+            if (Date.now() > deadline) {
+                this.logger.warn(
+                    `Terminating client stalled at ${client.bufferedAmount} buffered bytes for ${STALL_TIMEOUT_MS}ms`,
+                );
+                client.terminate();
+                return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            delay = Math.min(delay * 2, 100);
         }
     }
 }
