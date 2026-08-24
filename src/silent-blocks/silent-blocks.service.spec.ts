@@ -3,6 +3,7 @@ import { CacheModule } from '@nestjs/cache-manager';
 import { TransactionsService } from '@/transactions/transactions.service';
 import { SilentBlocksService } from '@/silent-blocks/silent-blocks.service';
 import { silentBlockEncodingFixture } from '@/silent-blocks/silent-blocks.service.fixtures';
+import { encodeSilentBlock } from '@/silent-blocks/silent-block-encoder';
 import { SilentBlocksGateway } from '@/silent-blocks/silent-blocks.gateway';
 import { BlockStateService } from '@/block-state/block-state.service';
 import { StorageService } from '@/storage/storage.service';
@@ -152,6 +153,22 @@ describe('SilentBlocksService', () => {
         );
 
         expect(encodedBlock.toString('hex')).toEqual('0000');
+    });
+
+    it('should encode a silent block identically regardless of input order', () => {
+        const txs = silentBlockEncodingFixture[0].transactions.map((tx) => ({
+            ...tx,
+            outputs: tx.outputs.map((o) => ({ ...o, transactionId: tx.id })),
+        }));
+        expect(txs.length).toBeGreaterThan(1);
+
+        const forward = encodeSilentBlock(txs);
+        const reversed = encodeSilentBlock([...txs].reverse());
+
+        expect(reversed.toString('hex')).toEqual(forward.toString('hex'));
+        expect(txs[0].id).toEqual(
+            silentBlockEncodingFixture[0].transactions[0].id,
+        );
     });
 
     it('should return correct framed data from streamSilentBlocksRange', async () => {

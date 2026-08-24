@@ -17,6 +17,9 @@ import { TransactionData } from '@/storage/interfaces';
 
 const BACKFILL_BATCH_SIZE = 100;
 
+// type + varint(0)
+const EMPTY_SILENT_BLOCK_LENGTH = 2;
+
 // Heights processed per DB scan inside streamSilentBlocksRange. Small enough that
 // the first frame is emitted quickly (low TTFB, keeps the proxy connection warm),
 // large enough to amortise the range-scan cost.
@@ -86,6 +89,10 @@ export class SilentBlocksService implements OnModuleInit {
                 // Gap-fill mode trusts a present blob and skips re-encoding.
                 if (existing && !repair) continue;
 
+                // An empty block is byte-identical on every encoder version, so
+                // repair has nothing to fix and can skip the scan.
+                if (existing?.length === EMPTY_SILENT_BLOCK_LENGTH) continue;
+
                 const txs =
                     await this.storageService.getTransactionsByBlockHeight(
                         height,
@@ -97,6 +104,10 @@ export class SilentBlocksService implements OnModuleInit {
                     pending.push({ height, blob: fresh });
                 }
             }
+
+            // The scans above are synchronous; yield so the backfill can't
+            // starve the indexer or the HTTP server.
+            await new Promise((resolve) => setImmediate(resolve));
 
             if (pending.length === 0) continue;
 
@@ -232,14 +243,17 @@ export class SilentBlocksService implements OnModuleInit {
                         // means nothing to scan — skip the frame entirely.
                         continue;
                     }
-                    // filterSpent=false: blob store miss; fall back to single-height fetch.
-                    blob = await this.getSilentBlockByHeight(h, filterSpent);
+                    // filterSpent=false: blob store miss, encode from tx data.
+                    blob = encodeSilentBlock(
+                        await this.transactionsService.getTransactionByBlockHeight(
+                            h,
+                            false,
+                        ),
+                    );
                 }
 
-                // An empty silent block encodes to exactly 2 bytes (type + varint(0)).
-                // Sending it wastes bandwidth and forces a client microtask per block;
-                // the client learns the range was clean from the final `synced` ACK.
-                if (blob.length <= 2) continue;
+                // The client learns the range was clean from the `synced` ACK.
+                if (blob.length <= EMPTY_SILENT_BLOCK_LENGTH) continue;
 
                 const header = Buffer.alloc(8);
                 header.writeUInt32BE(h, 0);

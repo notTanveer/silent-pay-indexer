@@ -136,14 +136,18 @@ export class BitcoinCoreProvider
                 transactions: Transaction[];
                 blockHash: string;
                 blockTime: number;
-            }> | null = this.processBlock(height, verbosityLevel);
+            }> | null = this.prefetch(
+                this.processBlock(height, verbosityLevel),
+            );
 
             for (height; height <= tipHeight; height++) {
                 const { transactions, blockHash, blockTime } = await nextBlock;
 
                 nextBlock =
                     height + 1 <= tipHeight
-                        ? this.processBlock(height + 1, verbosityLevel)
+                        ? this.prefetch(
+                              this.processBlock(height + 1, verbosityLevel),
+                          )
                         : null;
 
                 await this.dbTransactionService.execute(async (batch) => {

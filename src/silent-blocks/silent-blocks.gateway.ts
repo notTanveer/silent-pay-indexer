@@ -30,6 +30,9 @@ export class SilentBlocksGateway
 
     @WebSocketServer() server: Server;
 
+    // Clients mid-backfill: a bare tip broadcast would desync their frame parser.
+    private readonly syncing = new Set<WebSocket>();
+
     constructor(
         @Inject(forwardRef(() => SilentBlocksService))
         private readonly silentBlocksService: SilentBlocksService,
@@ -41,6 +44,7 @@ export class SilentBlocksGateway
     }
 
     handleDisconnect(client: WebSocket) {
+        this.syncing.delete(client);
         const remoteAddress = (client as any)._socket.remoteAddress;
         this.logger.debug(`Client disconnected: ${remoteAddress}`);
     }
@@ -74,6 +78,12 @@ export class SilentBlocksGateway
                 await this.silentBlocksService.getLatestIndexedBlockHeight();
             const requestedTo =
                 data?.to != null ? Math.floor(Number(data.to)) : tip;
+            if (!Number.isFinite(requestedTo)) {
+                this.sendControl(client, 'error', {
+                    message: '`to` must be an integer',
+                });
+                return;
+            }
             const to = Math.min(requestedTo, tip);
             const filterSpent = data?.filterSpent ?? true;
 
@@ -84,16 +94,21 @@ export class SilentBlocksGateway
             }
 
             let count = 0;
-            for await (const frame of this.silentBlocksService.streamSilentBlocksRange(
-                from,
-                to,
-                filterSpent,
-            )) {
-                if (client.readyState !== WebSocket.OPEN) return; // client gone
-                await this.awaitDrain(client);
-                if (client.readyState !== WebSocket.OPEN) return;
-                client.send(frame, { binary: true });
-                count++;
+            this.syncing.add(client);
+            try {
+                for await (const frame of this.silentBlocksService.streamSilentBlocksRange(
+                    from,
+                    to,
+                    filterSpent,
+                )) {
+                    if (client.readyState !== WebSocket.OPEN) return; // client gone
+                    await this.awaitDrain(client);
+                    if (client.readyState !== WebSocket.OPEN) return;
+                    client.send(frame, { binary: true });
+                    count++;
+                }
+            } finally {
+                this.syncing.delete(client);
             }
 
             this.sendControl(client, 'synced', { from, to, tip, count });
@@ -116,6 +131,7 @@ export class SilentBlocksGateway
 
     broadcastSilentBlock(silentBlock: Buffer) {
         for (const client of this.server.clients) {
+            if (this.syncing.has(client)) continue;
             if (client.readyState === WebSocket.OPEN) {
                 client.send(silentBlock);
             }

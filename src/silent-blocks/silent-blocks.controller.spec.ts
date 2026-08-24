@@ -1,6 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { CacheModule } from '@nestjs/cache-manager';
-import { CacheInterceptor } from '@nestjs/cache-manager';
+import { CacheInterceptor, CacheModule } from '@nestjs/cache-manager';
 import { SilentBlocksController } from '@/silent-blocks/silent-blocks.controller';
 import { SilentBlocksService } from '@/silent-blocks/silent-blocks.service';
 import { THROTTLER_SKIP } from '@nestjs/throttler/dist/throttler.constants';
@@ -28,12 +27,12 @@ describe('SilentBlocksController', () => {
         controller = module.get<SilentBlocksController>(SilentBlocksController);
     });
 
-    it('should skip throttling on the range endpoint', () => {
+    it('should throttle the range endpoint', () => {
         const metadata = Reflect.getMetadata(
             THROTTLER_SKIP + 'default',
             controller.getSilentBlocksRange,
         );
-        expect(metadata).toBe(true);
+        expect(metadata).toBeUndefined();
     });
 
     it('should NOT have CacheInterceptor on getSilentBlockByHeight', () => {

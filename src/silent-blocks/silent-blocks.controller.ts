@@ -10,10 +10,25 @@ import {
     Res,
     UseInterceptors,
 } from '@nestjs/common';
-import { SkipThrottle } from '@nestjs/throttler';
 import { Response } from 'express';
 import { SilentBlocksService } from '@/silent-blocks/silent-blocks.service';
 import { MAX_SILENT_BLOCK_RANGE } from '@/common/constants';
+
+const CACHE_CONFIRMATION_DEPTH = 6;
+
+const IMMUTABLE = 'public, max-age=31536000, immutable';
+const NO_STORE = 'no-store';
+
+const drained = (res: Response): Promise<void> =>
+    new Promise((resolve) => {
+        const done = () => {
+            res.off('drain', done);
+            res.off('close', done);
+            resolve();
+        };
+        res.once('drain', done);
+        res.once('close', done);
+    });
 
 @Controller('silent-block')
 export class SilentBlocksController {
@@ -21,7 +36,7 @@ export class SilentBlocksController {
 
     @Get('height/:height')
     async getSilentBlockByHeight(
-        @Param('height') blockHeight: number,
+        @Param('height', ParseIntPipe) blockHeight: number,
         @Res() res: Response,
         @Query('filterSpent', new ParseBoolPipe({ optional: true }))
         filterSpent = false,
@@ -31,12 +46,16 @@ export class SilentBlocksController {
             filterSpent,
         );
 
+        const latestHeight =
+            await this.silentBlocksService.getLatestIndexedBlockHeight();
+        const cacheable =
+            !filterSpent &&
+            blockHeight <= latestHeight - CACHE_CONFIRMATION_DEPTH;
+
         res.set({
             'Content-Type': 'application/octet-stream',
             'Content-Length': buffer.length,
-            'Cache-Control': filterSpent
-                ? 'no-store'
-                : 'public, max-age=31536000, immutable',
+            'Cache-Control': cacheable ? IMMUTABLE : NO_STORE,
         });
         res.send(buffer);
     }
@@ -56,14 +75,12 @@ export class SilentBlocksController {
         res.set({
             'Content-Type': 'application/octet-stream',
             'Content-Length': buffer.length,
-            'Cache-Control': filterSpent
-                ? 'no-store'
-                : 'public, max-age=31536000, immutable',
+            // Depth is unknowable from a hash, so bound staleness instead.
+            'Cache-Control': filterSpent ? NO_STORE : 'public, max-age=60',
         });
         res.send(buffer);
     }
 
-    @SkipThrottle()
     @Get('range')
     async getSilentBlocksRange(
         @Query('startHeight', ParseIntPipe) startHeight: number,
@@ -72,6 +89,9 @@ export class SilentBlocksController {
         @Query('filterSpent', new ParseBoolPipe({ optional: true }))
         filterSpent = false,
     ) {
+        if (startHeight < 0) {
+            throw new BadRequestException('startHeight must be >= 0');
+        }
         if (endHeight < startHeight) {
             throw new BadRequestException('endHeight must be >= startHeight');
         }
@@ -85,13 +105,12 @@ export class SilentBlocksController {
             await this.silentBlocksService.getLatestIndexedBlockHeight();
 
         // filterSpent responses are always live — never cache them
-        const isDeepRange = !filterSpent && endHeight <= latestHeight - 6;
+        const isDeepRange =
+            !filterSpent &&
+            endHeight <= latestHeight - CACHE_CONFIRMATION_DEPTH;
         res.set({
             'Content-Type': 'application/octet-stream',
-            'Transfer-Encoding': 'chunked',
-            'Cache-Control': isDeepRange
-                ? 'public, max-age=31536000, immutable'
-                : 'no-store',
+            'Cache-Control': isDeepRange ? IMMUTABLE : NO_STORE,
         });
 
         for await (const frame of this.silentBlocksService.streamSilentBlocksRange(
@@ -99,7 +118,10 @@ export class SilentBlocksController {
             endHeight,
             filterSpent,
         )) {
-            res.write(frame);
+            if (res.closed || res.destroyed) return;
+            if (!res.write(frame)) {
+                await drained(res);
+            }
         }
         res.end();
     }

@@ -11,13 +11,17 @@ export function getSilentBlockLength(transactions: TransactionData[]): number {
 }
 
 export function encodeSilentBlock(transactions: TransactionData[]): Buffer {
-    const block = Buffer.alloc(getSilentBlockLength(transactions));
+    // Producers disagree on order; the bytes are cached immutable, so they can't.
+    const ordered = [...transactions].sort((a, b) =>
+        a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+    );
+    const block = Buffer.alloc(getSilentBlockLength(ordered));
     let cursor = 0;
 
     cursor = block.writeUInt8(SILENT_PAYMENT_BLOCK_TYPE, cursor);
-    cursor = encodeVarInt(transactions.length, block, cursor);
+    cursor = encodeVarInt(ordered.length, block, cursor);
 
-    for (const tx of transactions) {
+    for (const tx of ordered) {
         cursor += block.write(tx.id, cursor, 32, 'hex');
         cursor = encodeVarInt(tx.outputs.length, block, cursor);
 

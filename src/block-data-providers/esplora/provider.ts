@@ -128,8 +128,9 @@ export class EsploraProvider
             let height =
                 ((await this.traceReorg()) ?? state.indexedBlockHeight) + 1;
 
-            let nextBlockHash: Promise<string> | null =
-                this.getBlockHash(height);
+            let nextBlockHash: Promise<string> | null = this.prefetch(
+                this.getBlockHash(height),
+            );
 
             for (height; height <= tipHeight; height++) {
                 const blockHash = await nextBlockHash;
@@ -139,7 +140,7 @@ export class EsploraProvider
 
                 nextBlockHash =
                     height + 1 <= tipHeight
-                        ? this.getBlockHash(height + 1)
+                        ? this.prefetch(this.getBlockHash(height + 1))
                         : null;
 
                 await this.processBlock(height, blockHash);
@@ -152,7 +153,6 @@ export class EsploraProvider
     private async processBlock(height: number, hash: string) {
         const state = await this.getState();
         const txids = await this.getTxidsForBlock(hash);
-        const allBlockTxData: TransactionData[] = [];
 
         for (
             let i = state.lastProcessedTxIndex + 1;
@@ -207,8 +207,6 @@ export class EsploraProvider
                             for (const [k, v] of result.pendingOutputs) {
                                 pendingOutputs.set(k, v);
                             }
-                            if (result.txData)
-                                allBlockTxData.push(result.txData);
                         }, this),
                     );
 
@@ -218,16 +216,10 @@ export class EsploraProvider
                         pendingOutputs,
                     );
 
-                    if (isLastBatch) {
-                        this.storageService.saveSilentBlock(
-                            batch,
-                            height,
-                            encodeSilentBlock(allBlockTxData),
-                        );
-                    }
-
                     state.indexedBlockHeight = height;
-                    state.lastProcessedTxIndex = i + this.batchSize - 1;
+                    state.lastProcessedTxIndex = isLastBatch
+                        ? 0
+                        : i + this.batchSize - 1;
                     await this.setState(
                         state,
                         {
@@ -246,6 +238,21 @@ export class EsploraProvider
                 throw error;
             }
         }
+
+        // Read back from storage, not accumulated in-run: a run that resumed
+        // mid-block would only see part of the block.
+        const blockTxData: TransactionData[] =
+            await this.storageService.getTransactionsByBlockHeight(
+                height,
+                false,
+            );
+        await this.dbTransactionService.execute(async (batch) => {
+            this.storageService.saveSilentBlock(
+                batch,
+                height,
+                encodeSilentBlock(blockTxData),
+            );
+        });
     }
 
     private async getTipHeight(): Promise<number> {
