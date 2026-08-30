@@ -15,8 +15,6 @@ import { DbTransactionService } from '@/db-transaction/db-transaction.service';
 import { encodeSilentBlock } from '@/silent-blocks/silent-block-encoder';
 import { TransactionData } from '@/storage/interfaces';
 
-const BACKFILL_BATCH_SIZE = 100;
-
 // type + varint(0)
 const EMPTY_SILENT_BLOCK_LENGTH = 2;
 
@@ -72,27 +70,16 @@ export class SilentBlocksService implements OnModuleInit {
 
         let written = 0;
 
-        for (let h = startHeight; h <= tipHeight; h += BACKFILL_BATCH_SIZE) {
-            const batchEnd = Math.min(h + BACKFILL_BATCH_SIZE - 1, tipHeight);
-            const existingBlobs = this.storageService.getSilentBlocksRange(
-                h,
-                batchEnd,
-            );
-            const existingByHeight = new Map(
-                existingBlobs.map((b) => [b.height, b.blob]),
-            );
+        // One height at a time: read, encode and commit run with no awaited
+        // yield between them, so a concurrent indexer or reorg write can't be
+        // clobbered by a stale encoding. The yield goes after the commit, which
+        // also keeps these synchronous scans from starving the indexer and the
+        // HTTP server.
+        for (let height = startHeight; height <= tipHeight; height++) {
+            const existing = this.storageService.getSilentBlock(height);
 
-            const pending: { height: number; blob: Buffer }[] = [];
-            for (let height = h; height <= batchEnd; height++) {
-                const existing = existingByHeight.get(height);
-
-                // Gap-fill mode trusts a present blob and skips re-encoding.
-                if (existing && !repair) continue;
-
-                // An empty block is byte-identical on every encoder version, so
-                // repair has nothing to fix and can skip the scan.
-                if (existing?.length === EMPTY_SILENT_BLOCK_LENGTH) continue;
-
+            // Gap-fill mode trusts a present blob and skips re-encoding.
+            if (!existing || repair) {
                 const txs =
                     await this.storageService.getTransactionsByBlockHeight(
                         height,
@@ -101,22 +88,18 @@ export class SilentBlocksService implements OnModuleInit {
                 const fresh = encodeSilentBlock(txs);
 
                 if (!existing || !existing.equals(fresh)) {
-                    pending.push({ height, blob: fresh });
+                    await this.dbTransactionService.execute(async (batch) => {
+                        this.storageService.saveSilentBlock(
+                            batch,
+                            height,
+                            fresh,
+                        );
+                    });
+                    written++;
                 }
             }
 
-            // The scans above are synchronous; yield so the backfill can't
-            // starve the indexer or the HTTP server.
             await new Promise((resolve) => setImmediate(resolve));
-
-            if (pending.length === 0) continue;
-
-            await this.dbTransactionService.execute(async (batch) => {
-                for (const { height, blob } of pending) {
-                    this.storageService.saveSilentBlock(batch, height, blob);
-                    written++;
-                }
-            });
         }
 
         // Mark the repair done only after a full successful pass; a crash

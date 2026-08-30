@@ -138,4 +138,64 @@ describe('SilentBlocksGateway sync stream', () => {
         // Closed before first send: no frames, no synced control.
         expect(client.send as jest.Mock).not.toHaveBeenCalled();
     });
+
+    it('rejects a second concurrent sync on the same socket', async () => {
+        // The ws adapter dispatches with mergeMap, so nothing serialises
+        // handlers per socket; without a guard the first to finish clears
+        // `syncing` and re-admits unframed broadcasts into the second stream.
+        const gateway = new SilentBlocksGateway(serviceStub(1000));
+        const client = fakeClient();
+
+        const first = gateway.handleSync(client, { from: 100, to: 300 });
+        const second = gateway.handleSync(client, { from: 100, to: 300 });
+        await Promise.all([first, second]);
+
+        const { controls } = classify(client.send as jest.Mock);
+        expect(
+            controls.filter((c) => c.event === 'error').map((c) => c.data),
+        ).toEqual([
+            { message: 'a sync is already in progress on this socket' },
+        ]);
+        expect(controls.filter((c) => c.event === 'synced')).toHaveLength(1);
+    });
+
+    it.each([[null], [''], [[]], [false], ['12']])(
+        'rejects a non-integer `from` (%p) instead of coercing it to 0',
+        async (from) => {
+            const gateway = new SilentBlocksGateway(serviceStub(1000));
+            const client = fakeClient();
+
+            await gateway.handleSync(client, { from } as any);
+
+            const { frames, controls } = classify(client.send as jest.Mock);
+            expect(frames).toHaveLength(0);
+            expect(controls[0].event).toBe('error');
+        },
+    );
+
+    it('honours filterSpent sent as the string "false"', async () => {
+        const service = serviceStub(1000);
+        const spy = jest.spyOn(service, 'streamSilentBlocksRange');
+        const gateway = new SilentBlocksGateway(service);
+
+        await gateway.handleSync(fakeClient(), {
+            from: 100,
+            to: 101,
+            filterSpent: 'false',
+        } as any);
+
+        expect(spy).toHaveBeenCalledWith(100, 101, false);
+    });
+
+    it('releases the sync slot so a later sync can run', async () => {
+        const gateway = new SilentBlocksGateway(serviceStub(1000));
+        const client = fakeClient();
+
+        await gateway.handleSync(client, { from: 100, to: 101 });
+        await gateway.handleSync(client, { from: 102, to: 103 });
+
+        const { controls } = classify(client.send as jest.Mock);
+        expect(controls.filter((c) => c.event === 'synced')).toHaveLength(2);
+        expect(controls.some((c) => c.event === 'error')).toBe(false);
+    });
 });

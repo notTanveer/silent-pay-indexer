@@ -70,9 +70,23 @@ export class SilentBlocksGateway
         @ConnectedSocket() client: WebSocket,
         @MessageBody() data: SyncRequest,
     ): Promise<void> {
+        // The ws adapter dispatches messages with `mergeMap`, so nothing
+        // serialises handlers per socket. Two overlapping syncs would interleave
+        // frames and the first to finish would clear `syncing`, re-admitting
+        // unframed broadcasts into the other's stream.
+        if (this.syncing.has(client)) {
+            this.sendControl(client, 'error', {
+                message: 'a sync is already in progress on this socket',
+            });
+            return;
+        }
+        this.syncing.add(client);
+
         try {
-            const from = Math.floor(Number(data?.from));
-            if (!Number.isFinite(from) || from < 0) {
+            // Number() coerces null/''/[]/false to 0, which would silently turn
+            // a junk cursor into a full sync from genesis.
+            const from = data?.from;
+            if (!Number.isInteger(from) || from < 0) {
                 this.sendControl(client, 'error', {
                     message: 'sync requires a non-negative integer `from`',
                 });
@@ -81,16 +95,15 @@ export class SilentBlocksGateway
 
             const tip =
                 await this.silentBlocksService.getLatestIndexedBlockHeight();
-            const requestedTo =
-                data?.to != null ? Math.floor(Number(data.to)) : tip;
-            if (!Number.isFinite(requestedTo)) {
+            if (data?.to != null && !Number.isInteger(data.to)) {
                 this.sendControl(client, 'error', {
                     message: '`to` must be an integer',
                 });
                 return;
             }
-            const to = Math.min(requestedTo, tip);
-            const filterSpent = data?.filterSpent ?? true;
+            const to = Math.min(data?.to ?? tip, tip);
+            // `?? true` alone would keep the truthy string "false".
+            const filterSpent = String(data?.filterSpent ?? true) !== 'false';
 
             if (to < from) {
                 // Nothing to send (client already at/above tip) — still ack.
@@ -99,21 +112,16 @@ export class SilentBlocksGateway
             }
 
             let count = 0;
-            this.syncing.add(client);
-            try {
-                for await (const frame of this.silentBlocksService.streamSilentBlocksRange(
-                    from,
-                    to,
-                    filterSpent,
-                )) {
-                    if (client.readyState !== WebSocket.OPEN) return; // client gone
-                    await this.awaitDrain(client);
-                    if (client.readyState !== WebSocket.OPEN) return;
-                    client.send(frame, { binary: true });
-                    count++;
-                }
-            } finally {
-                this.syncing.delete(client);
+            for await (const frame of this.silentBlocksService.streamSilentBlocksRange(
+                from,
+                to,
+                filterSpent,
+            )) {
+                if (client.readyState !== WebSocket.OPEN) return; // client gone
+                await this.awaitDrain(client);
+                if (client.readyState !== WebSocket.OPEN) return;
+                client.send(frame, { binary: true });
+                count++;
             }
 
             this.sendControl(client, 'synced', { from, to, tip, count });
@@ -126,6 +134,8 @@ export class SilentBlocksGateway
             this.sendControl(client, 'error', {
                 message: err instanceof Error ? err.message : 'sync failed',
             });
+        } finally {
+            this.syncing.delete(client);
         }
     }
 

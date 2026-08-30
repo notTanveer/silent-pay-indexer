@@ -229,8 +229,6 @@ export class EsploraProvider
                         batch,
                     );
                 });
-
-                this.eventEmitter.emit(INDEXED_BLOCK_EVENT, height);
             } catch (error) {
                 this.logger.error(
                     `Error processing transactions in block at height ${height}, hash ${hash}: ${error.message}`,
@@ -253,6 +251,11 @@ export class EsploraProvider
                 encodeSilentBlock(blockTxData),
             );
         });
+
+        // Emitted once per block, after the blob is stored: a per-batch emit
+        // broadcast the same height repeatedly, each time re-encoding whatever
+        // subset of the block had been committed so far.
+        this.eventEmitter.emit(INDEXED_BLOCK_EVENT, height);
     }
 
     private async getTipHeight(): Promise<number> {

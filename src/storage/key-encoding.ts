@@ -11,6 +11,31 @@ const PREFIX = {
     SILENT_BLOCK: Buffer.from('sb:'),
 } as const;
 
+// --- Height-keyed namespaces ---
+// Three namespaces key on a 4-byte big-endian height; the span upper bound is
+// exclusive, so it encodes `endHeight + 1`.
+
+function heightKey(prefix: Buffer, height: number): Buffer {
+    const heightBuf = Buffer.alloc(4);
+    heightBuf.writeUInt32BE(height);
+    return Buffer.concat([prefix, heightBuf]);
+}
+
+function heightAt(prefix: Buffer, key: Buffer): number {
+    return key.readUInt32BE(prefix.length);
+}
+
+function heightSpan(
+    prefix: Buffer,
+    startHeight: number,
+    endHeight: number,
+): { gte: Buffer; lt: Buffer } {
+    return {
+        gte: heightKey(prefix, startHeight),
+        lt: heightKey(prefix, endHeight + 1),
+    };
+}
+
 // --- Key encoders ---
 
 export function encodeTxKey(txid: string): Buffer {
@@ -63,9 +88,7 @@ export function encodeUnspentIndexKey(txid: string, vout: number): Buffer {
 }
 
 export function encodeBlockStateKey(height: number): Buffer {
-    const heightBuf = Buffer.alloc(4);
-    heightBuf.writeUInt32BE(height);
-    return Buffer.concat([PREFIX.BLOCK_STATE, heightBuf]);
+    return heightKey(PREFIX.BLOCK_STATE, height);
 }
 
 export function encodeOpStateKey(id: string): Buffer {
@@ -195,7 +218,7 @@ export function decodeUnspentIndexKey(key: Buffer): {
 }
 
 export function decodeBlockStateKey(key: Buffer): number {
-    return key.readUInt32BE(PREFIX.BLOCK_STATE.length);
+    return heightAt(PREFIX.BLOCK_STATE, key);
 }
 
 // --- Range helpers for prefix scans ---
@@ -237,13 +260,7 @@ export function singleHeightRange(height: number): {
     gte: Buffer;
     lt: Buffer;
 } {
-    const heightBuf = Buffer.alloc(4);
-    heightBuf.writeUInt32BE(height);
-    const gte = Buffer.concat([PREFIX.HEIGHT_IDX, heightBuf]);
-    const nextHeightBuf = Buffer.alloc(4);
-    nextHeightBuf.writeUInt32BE(height + 1);
-    const lt = Buffer.concat([PREFIX.HEIGHT_IDX, nextHeightBuf]);
-    return { gte, lt };
+    return heightSpan(PREFIX.HEIGHT_IDX, height, height);
 }
 
 /** Height index range: all txids across a block height span [start, end] */
@@ -251,14 +268,7 @@ export function heightSpanRange(
     startHeight: number,
     endHeight: number,
 ): { gte: Buffer; lt: Buffer } {
-    const startBuf = Buffer.alloc(4);
-    startBuf.writeUInt32BE(startHeight);
-    const endBuf = Buffer.alloc(4);
-    endBuf.writeUInt32BE(endHeight + 1);
-    return {
-        gte: Buffer.concat([PREFIX.HEIGHT_IDX, startBuf]),
-        lt: Buffer.concat([PREFIX.HEIGHT_IDX, endBuf]),
-    };
+    return heightSpan(PREFIX.HEIGHT_IDX, startHeight, endHeight);
 }
 
 /** Hash index range: all txids for a specific block hash */
@@ -319,13 +329,11 @@ export function timeIndexSeek(timestamp: number): {
 }
 
 export function encodeSilentBlockKey(height: number): Buffer {
-    const heightBuf = Buffer.alloc(4);
-    heightBuf.writeUInt32BE(height);
-    return Buffer.concat([PREFIX.SILENT_BLOCK, heightBuf]);
+    return heightKey(PREFIX.SILENT_BLOCK, height);
 }
 
 export function decodeSilentBlockKey(key: Buffer): number {
-    return key.readUInt32BE(PREFIX.SILENT_BLOCK.length);
+    return heightAt(PREFIX.SILENT_BLOCK, key);
 }
 
 /** Silent block span range: all blobs across [startHeight, endHeight] */
@@ -333,12 +341,5 @@ export function silentBlockSpanRange(
     startHeight: number,
     endHeight: number,
 ): { gte: Buffer; lt: Buffer } {
-    const startBuf = Buffer.alloc(4);
-    startBuf.writeUInt32BE(startHeight);
-    const endBuf = Buffer.alloc(4);
-    endBuf.writeUInt32BE(endHeight + 1);
-    return {
-        gte: Buffer.concat([PREFIX.SILENT_BLOCK, startBuf]),
-        lt: Buffer.concat([PREFIX.SILENT_BLOCK, endBuf]),
-    };
+    return heightSpan(PREFIX.SILENT_BLOCK, startHeight, endHeight);
 }

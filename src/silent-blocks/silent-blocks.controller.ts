@@ -1,6 +1,5 @@
 import { CacheInterceptor } from '@nestjs/cache-manager';
 import {
-    BadRequestException,
     Controller,
     Get,
     Param,
@@ -11,24 +10,20 @@ import {
     UseInterceptors,
 } from '@nestjs/common';
 import { Response } from 'express';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { SilentBlocksService } from '@/silent-blocks/silent-blocks.service';
 import { MAX_SILENT_BLOCK_RANGE } from '@/common/constants';
+import { assertHeight, assertHeightRange } from '@/common/common';
 
 const CACHE_CONFIRMATION_DEPTH = 6;
 
 const IMMUTABLE = 'public, max-age=31536000, immutable';
 const NO_STORE = 'no-store';
 
-const drained = (res: Response): Promise<void> =>
-    new Promise((resolve) => {
-        const done = () => {
-            res.off('drain', done);
-            res.off('close', done);
-            resolve();
-        };
-        res.once('drain', done);
-        res.once('close', done);
-    });
+// A client that stops reading must not pin the generator (and its LMDB reads)
+// forever. Mirrors STALL_TIMEOUT_MS on the WebSocket path.
+const STREAM_STALL_TIMEOUT_MS = 60_000;
 
 @Controller('silent-block')
 export class SilentBlocksController {
@@ -41,16 +36,20 @@ export class SilentBlocksController {
         @Query('filterSpent', new ParseBoolPipe({ optional: true }))
         filterSpent = false,
     ) {
+        assertHeight(blockHeight, 'height');
+
         const buffer = await this.silentBlocksService.getSilentBlockByHeight(
             blockHeight,
             filterSpent,
         );
 
-        const latestHeight =
-            await this.silentBlocksService.getLatestIndexedBlockHeight();
+        // filterSpent responses are always live, so don't pay for the tip
+        // lookup only to discard it.
         const cacheable =
             !filterSpent &&
-            blockHeight <= latestHeight - CACHE_CONFIRMATION_DEPTH;
+            blockHeight <=
+                (await this.silentBlocksService.getLatestIndexedBlockHeight()) -
+                    CACHE_CONFIRMATION_DEPTH;
 
         res.set({
             'Content-Type': 'application/octet-stream',
@@ -89,41 +88,46 @@ export class SilentBlocksController {
         @Query('filterSpent', new ParseBoolPipe({ optional: true }))
         filterSpent = false,
     ) {
-        if (startHeight < 0) {
-            throw new BadRequestException('startHeight must be >= 0');
-        }
-        if (endHeight < startHeight) {
-            throw new BadRequestException('endHeight must be >= startHeight');
-        }
-        if (endHeight - startHeight + 1 > MAX_SILENT_BLOCK_RANGE) {
-            throw new BadRequestException(
-                `Range exceeds maximum of ${MAX_SILENT_BLOCK_RANGE} blocks`,
-            );
-        }
+        assertHeightRange(startHeight, endHeight, MAX_SILENT_BLOCK_RANGE);
 
         const latestHeight =
             await this.silentBlocksService.getLatestIndexedBlockHeight();
 
+        // Empty heights are omitted from the stream, so an unindexed height is
+        // byte-identical to an empty one. Clamp to the tip (as the WebSocket
+        // path does) so we never present "not indexed yet" as "no payments".
+        const lastHeight = Math.min(endHeight, latestHeight);
+
         // filterSpent responses are always live — never cache them
         const isDeepRange =
             !filterSpent &&
-            endHeight <= latestHeight - CACHE_CONFIRMATION_DEPTH;
+            lastHeight <= latestHeight - CACHE_CONFIRMATION_DEPTH;
         res.set({
             'Content-Type': 'application/octet-stream',
             'Cache-Control': isDeepRange ? IMMUTABLE : NO_STORE,
         });
 
-        for await (const frame of this.silentBlocksService.streamSilentBlocksRange(
-            startHeight,
-            endHeight,
-            filterSpent,
-        )) {
-            if (res.closed || res.destroyed) return;
-            if (!res.write(frame)) {
-                await drained(res);
-            }
+        res.setTimeout(STREAM_STALL_TIMEOUT_MS, () => res.destroy());
+
+        try {
+            await pipeline(
+                Readable.from(
+                    this.silentBlocksService.streamSilentBlocksRange(
+                        startHeight,
+                        lastHeight,
+                        filterSpent,
+                    ),
+                    { objectMode: false },
+                ),
+                res,
+            );
+        } catch {
+            // Headers are already out, so letting Nest's filter end() the
+            // response would present a truncated range as a complete one — and
+            // a deep range is cached immutable for a year. Break the connection
+            // instead so the client retries.
+            res.destroy();
         }
-        res.end();
     }
 
     @Get('latest-height')
