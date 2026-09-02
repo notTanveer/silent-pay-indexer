@@ -159,6 +159,50 @@ describe('SilentBlocksGateway sync stream', () => {
         expect(controls.filter((c) => c.event === 'synced')).toHaveLength(1);
     });
 
+    it('streams blocks indexed while the sync was running', async () => {
+        // broadcastSilentBlock skips a client in `syncing`, and those heights
+        // are past the `to` fixed at sync start — without a catch-up pass they
+        // are dropped with no signal to the client.
+        const service = serviceStub(102);
+        (service.getLatestIndexedBlockHeight as jest.Mock)
+            .mockResolvedValueOnce(102) // tip at sync start
+            .mockResolvedValue(104); // two blocks landed mid-stream
+        const gateway = new SilentBlocksGateway(service);
+        const client = fakeClient();
+
+        await gateway.handleSync(client, { from: 100 });
+
+        const { frames, controls } = classify(client.send as jest.Mock);
+        expect(frames.map((f) => f.readUInt32BE(0))).toEqual([
+            100, 101, 102, 103, 104,
+        ]);
+        expect(controls[0]).toEqual({
+            event: 'synced',
+            data: { from: 100, to: 104, tip: 104, count: 5 },
+        });
+    });
+
+    it('acks with `tip` above `to` when the tip never settles', async () => {
+        // A tip advancing every pass (regtest/IBD) must not pin the socket.
+        // Bail after the round cap and let the ack tell the client it's behind
+        // — `to` must still be a height we actually streamed.
+        let tip = 100;
+        const service = serviceStub(100);
+        (service.getLatestIndexedBlockHeight as jest.Mock).mockImplementation(
+            async () => ++tip,
+        );
+        const gateway = new SilentBlocksGateway(service);
+        const client = fakeClient();
+
+        await gateway.handleSync(client, { from: 100 });
+
+        const { frames, controls } = classify(client.send as jest.Mock);
+        const heights = frames.map((f) => f.readUInt32BE(0));
+        expect(controls[0].event).toBe('synced');
+        expect(controls[0].data.tip).toBeGreaterThan(controls[0].data.to);
+        expect(heights[heights.length - 1]).toBe(controls[0].data.to);
+    });
+
     it.each([[null], [''], [[]], [false], ['12']])(
         'rejects a non-integer `from` (%p) instead of coercing it to 0',
         async (from) => {

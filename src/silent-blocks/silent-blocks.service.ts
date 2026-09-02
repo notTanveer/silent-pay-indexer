@@ -70,11 +70,13 @@ export class SilentBlocksService implements OnModuleInit {
 
         let written = 0;
 
-        // One height at a time: read, encode and commit run with no awaited
-        // yield between them, so a concurrent indexer or reorg write can't be
-        // clobbered by a stale encoding. The yield goes after the commit, which
-        // also keeps these synchronous scans from starving the indexer and the
-        // HTTP server.
+        // One height at a time. This used to encode 100 heights, yield, then
+        // write them all, so a whole batch of encodings could go stale and
+        // clobber writes committed during the yield. Read -> encode -> commit
+        // per height keeps that window to a single height, and a height the
+        // indexer rewrites underneath us is re-saved by its own processBlock.
+        // The explicit yield goes after the commit, so these synchronous scans
+        // don't starve the indexer and the HTTP server.
         for (let height = startHeight; height <= tipHeight; height++) {
             const existing = this.storageService.getSilentBlock(height);
 

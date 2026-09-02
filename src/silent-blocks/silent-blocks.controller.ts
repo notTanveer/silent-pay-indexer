@@ -2,6 +2,7 @@ import { CacheInterceptor } from '@nestjs/cache-manager';
 import {
     Controller,
     Get,
+    NotFoundException,
     Param,
     ParseBoolPipe,
     ParseIntPipe,
@@ -38,18 +39,26 @@ export class SilentBlocksController {
     ) {
         assertHeight(blockHeight, 'height');
 
+        const latestHeight =
+            await this.silentBlocksService.getLatestIndexedBlockHeight();
+
+        // An unindexed height encodes to the same 2 bytes as a genuinely empty
+        // block, so serving it would tell the client "no payments here" for a
+        // block we haven't seen. /range clamps for the same reason.
+        if (blockHeight > latestHeight) {
+            throw new NotFoundException(
+                `height ${blockHeight} is not indexed yet (tip ${latestHeight})`,
+            );
+        }
+
         const buffer = await this.silentBlocksService.getSilentBlockByHeight(
             blockHeight,
             filterSpent,
         );
 
-        // filterSpent responses are always live, so don't pay for the tip
-        // lookup only to discard it.
         const cacheable =
             !filterSpent &&
-            blockHeight <=
-                (await this.silentBlocksService.getLatestIndexedBlockHeight()) -
-                    CACHE_CONFIRMATION_DEPTH;
+            blockHeight <= latestHeight - CACHE_CONFIRMATION_DEPTH;
 
         res.set({
             'Content-Type': 'application/octet-stream',

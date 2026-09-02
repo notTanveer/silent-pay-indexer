@@ -130,6 +130,27 @@ describe('SilentBlocksController height bounds and streaming', () => {
         expect(service.getSilentBlockByHeight).not.toHaveBeenCalled();
     });
 
+    it('404s a height above the indexed tip instead of serving an empty block', async () => {
+        // An unindexed height encodes to the same 2 bytes as an empty block,
+        // so serving it reads as "no payments here".
+        const res = await request(app.getHttpServer()).get(
+            '/silent-block/height/1001',
+        );
+        expect(res.status).toBe(404);
+        expect(service.getSilentBlockByHeight).not.toHaveBeenCalled();
+    });
+
+    it('serves a height at the indexed tip', async () => {
+        const res = await request(app.getHttpServer()).get(
+            '/silent-block/height/1000',
+        );
+        expect(res.status).toBe(200);
+        expect(service.getSilentBlockByHeight).toHaveBeenCalledWith(
+            1000,
+            false,
+        );
+    });
+
     it('clamps endHeight to the indexed tip', async () => {
         service.getLatestIndexedBlockHeight.mockResolvedValue(1005);
         await request(app.getHttpServer()).get(

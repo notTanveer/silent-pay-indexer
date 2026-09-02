@@ -20,6 +20,12 @@ const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 // the kernel has not yet given up on (half-open connections retry for minutes).
 const STALL_TIMEOUT_MS = 60_000;
 
+// Extra passes handleSync will make to pick up blocks indexed while it was
+// streaming. Bounded so a client syncing during a fast catch-up (regtest, IBD)
+// can't hold the socket indefinitely — it just gets a `synced` ack whose `tip`
+// is above `to` and syncs again.
+const MAX_CATCHUP_ROUNDS = 3;
+
 interface SyncRequest {
     from?: number;
     to?: number;
@@ -93,7 +99,7 @@ export class SilentBlocksGateway
                 return;
             }
 
-            const tip =
+            let tip =
                 await this.silentBlocksService.getLatestIndexedBlockHeight();
             if (data?.to != null && !Number.isInteger(data.to)) {
                 this.sendControl(client, 'error', {
@@ -101,7 +107,7 @@ export class SilentBlocksGateway
                 });
                 return;
             }
-            const to = Math.min(data?.to ?? tip, tip);
+            let to = Math.min(data?.to ?? tip, tip);
             // `?? true` alone would keep the truthy string "false".
             const filterSpent = String(data?.filterSpent ?? true) !== 'false';
 
@@ -111,19 +117,42 @@ export class SilentBlocksGateway
                 return;
             }
 
+            // A block indexed while we stream falls past `to`, and
+            // broadcastSilentBlock skips this client for as long as it's in
+            // `syncing` — so it would be dropped with no signal. Re-read the
+            // tip after each pass and stream the delta. Nothing awaits between
+            // the final tip read and `syncing.delete` in the `finally`, so a
+            // broadcast can't slip through that gap.
             let count = 0;
-            for await (const frame of this.silentBlocksService.streamSilentBlocksRange(
-                from,
-                to,
-                filterSpent,
-            )) {
-                if (client.readyState !== WebSocket.OPEN) return; // client gone
-                await this.awaitDrain(client);
-                if (client.readyState !== WebSocket.OPEN) return;
-                client.send(frame, { binary: true });
-                count++;
+            let cursor = from;
+
+            let round = 0;
+
+            for (;;) {
+                for await (const frame of this.silentBlocksService.streamSilentBlocksRange(
+                    cursor,
+                    to,
+                    filterSpent,
+                )) {
+                    if (client.readyState !== WebSocket.OPEN) return; // client gone
+                    await this.awaitDrain(client);
+                    if (client.readyState !== WebSocket.OPEN) return;
+                    client.send(frame, { binary: true });
+                    count++;
+                }
+
+                cursor = to + 1;
+                tip =
+                    await this.silentBlocksService.getLatestIndexedBlockHeight();
+                const nextTo = Math.min(data?.to ?? tip, tip);
+                // `to` only moves when another pass will actually run, so the
+                // ack never claims a height we didn't stream.
+                if (nextTo < cursor || ++round > MAX_CATCHUP_ROUNDS) break;
+                to = nextTo;
             }
 
+            // `to < tip` here means the rounds ran out — the ack tells the
+            // client it's still behind so it can sync again.
             this.sendControl(client, 'synced', { from, to, tip, count });
         } catch (err) {
             this.logger.error(

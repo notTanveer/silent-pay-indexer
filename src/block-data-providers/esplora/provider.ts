@@ -154,18 +154,18 @@ export class EsploraProvider
         const state = await this.getState();
         const txids = await this.getTxidsForBlock(hash);
 
-        for (
-            let i = state.lastProcessedTxIndex + 1;
-            i < txids.length;
-            i += this.batchSize
-        ) {
-            const txBatch = txids.slice(
-                i,
-                Math.min(i + this.batchSize, txids.length),
-            );
-            const isLastBatch = i + this.batchSize >= txids.length;
+        try {
+            for (
+                let i = state.lastProcessedTxIndex + 1;
+                i < txids.length;
+                i += this.batchSize
+            ) {
+                const txBatch = txids.slice(
+                    i,
+                    Math.min(i + this.batchSize, txids.length),
+                );
+                const isLastBatch = i + this.batchSize >= txids.length;
 
-            try {
                 await this.dbTransactionService.execute(async (batch) => {
                     const spentOutpoints: [string, number][] = [];
                     const pendingOutputs = new Map<
@@ -229,28 +229,44 @@ export class EsploraProvider
                         batch,
                     );
                 });
-            } catch (error) {
-                this.logger.error(
-                    `Error processing transactions in block at height ${height}, hash ${hash}: ${error.message}`,
-                );
-                throw error;
             }
-        }
 
-        // Read back from storage, not accumulated in-run: a run that resumed
-        // mid-block would only see part of the block.
-        const blockTxData: TransactionData[] =
-            await this.storageService.getTransactionsByBlockHeight(
-                height,
-                false,
+            // Read back from storage, not accumulated in-run: a run that
+            // resumed mid-block would only see part of the block.
+            const blockTxData: TransactionData[] =
+                await this.storageService.getTransactionsByBlockHeight(
+                    height,
+                    false,
+                );
+            await this.dbTransactionService.execute(async (batch) => {
+                this.storageService.saveSilentBlock(
+                    batch,
+                    height,
+                    encodeSilentBlock(blockTxData),
+                );
+
+                // Committed here too, not only in the batch loop: a
+                // coinbase-only block runs zero batches, so the height would
+                // never be marked done and every restart would reprocess it
+                // and re-emit INDEXED_BLOCK_EVENT for an already-broadcast
+                // block. Same batch as the blob, so the two can't diverge.
+                state.indexedBlockHeight = height;
+                state.lastProcessedTxIndex = 0;
+                await this.setState(
+                    state,
+                    {
+                        blockHeight: height,
+                        blockHash: hash,
+                    },
+                    batch,
+                );
+            });
+        } catch (error) {
+            this.logger.error(
+                `Error processing block at height ${height}, hash ${hash}: ${error.message}`,
             );
-        await this.dbTransactionService.execute(async (batch) => {
-            this.storageService.saveSilentBlock(
-                batch,
-                height,
-                encodeSilentBlock(blockTxData),
-            );
-        });
+            throw error;
+        }
 
         // Emitted once per block, after the blob is stored: a per-batch emit
         // broadcast the same height repeatedly, each time re-encoding whatever
