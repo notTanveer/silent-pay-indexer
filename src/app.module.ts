@@ -11,7 +11,11 @@ import { TransactionsModule } from '@/transactions/transactions.module';
 import { SilentBlocksModule } from '@/silent-blocks/silent-blocks.module';
 import { OperationStateModule } from '@/operation-state/operation-state.module';
 import { BlockProviderModule } from '@/block-data-providers/block-provider.module';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import {
+    ThrottlerModule,
+    ThrottlerGuard,
+    ThrottlerOptions,
+} from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import {
     WinstonModule,
@@ -45,12 +49,34 @@ import { WinstonModuleOptions } from 'nest-winston/dist/winston.interfaces';
         ThrottlerModule.forRootAsync({
             imports: [ConfigModule],
             inject: [ConfigService],
-            useFactory: (configService: ConfigService) => [
-                {
-                    ttl: configService.get<number>('throttler.ttl', 1000),
-                    limit: configService.get<number>('throttler.limit', 5),
-                },
-            ],
+            useFactory: (configService: ConfigService) => {
+                // Burst window. Unnamed so the response headers stay X-RateLimit-*.
+                const throttlers: ThrottlerOptions[] = [
+                    {
+                        ttl: configService.get<number>('throttler.ttl', 1000),
+                        limit: configService.get<number>('throttler.limit', 5),
+                    },
+                ];
+
+                // Optional second, longer window. A burst limit alone only caps instantaneous
+                // rate; this caps sustained volume. Registered only when configured, so
+                // existing configs (and the e2e suite) are unaffected.
+                const sustainedTtl = configService.get<number>(
+                    'throttler.sustained.ttl',
+                );
+                const sustainedLimit = configService.get<number>(
+                    'throttler.sustained.limit',
+                );
+                if (sustainedTtl && sustainedLimit) {
+                    throttlers.push({
+                        name: 'sustained',
+                        ttl: sustainedTtl,
+                        limit: sustainedLimit,
+                    });
+                }
+
+                return throttlers;
+            },
         }),
         WinstonModule.forRootAsync({
             imports: [ConfigModule],

@@ -42,6 +42,12 @@ class AppConfig {
     @Max(65535)
     port: number;
 
+    // Interface to bind to. Defaults to 0.0.0.0 when unset (container-friendly);
+    // set to 127.0.0.1 when a reverse proxy on the same host is the only client.
+    @IsOptional()
+    @IsString()
+    host?: string;
+
     @IsEnum(BitcoinNetwork)
     network: BitcoinNetwork;
 

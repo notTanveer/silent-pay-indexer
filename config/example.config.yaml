@@ -3,6 +3,9 @@ db:
   mapSize: 10737418240 # 10 GB — LMDB pre-configured max; grows lazily
 app:
   port: 80
+  # Interface to bind to. Omit (or use 0.0.0.0) to listen on all interfaces;
+  # set to 127.0.0.1 when a reverse proxy on the same host is the only client.
+  host: 0.0.0.0
   verbose: false
   debug: true
   network: regtest
@@ -19,5 +22,10 @@ bitcoinCore:
 throttler:
   ttl: 1000 # 1 sec
   limit: 5 # 5 requests
+  # Optional longer window, applied in addition to the burst window above.
+  # Omit both keys to disable.
+  sustained:
+    ttl: 60000 # 1 min
+    limit: 120 # 120 requests
 cache:
   ttl: 5000 # 5 sec
