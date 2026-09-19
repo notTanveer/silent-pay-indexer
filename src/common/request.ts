@@ -2,6 +2,9 @@ import { Logger } from '@nestjs/common';
 import { AxiosError, AxiosRequestConfig } from 'axios';
 import axios from 'axios';
 
+/** Provider requests slower than this (ms) are logged at debug for triage. */
+const SLOW_REQUEST_THRESHOLD_MS = 250;
+
 const axiosStatus = (error: AxiosError) => error.status || error.code;
 
 const axiosErrorResponse = (error: AxiosError) =>
@@ -25,7 +28,18 @@ export const makeRequest = async (
 ) => {
     for (let count = 1; count <= retryConfig.count; count++) {
         try {
+            const startedAt = process.hrtime.bigint();
             const response = await axios.request(requestConfig);
+            const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+
+            if (elapsedMs > SLOW_REQUEST_THRESHOLD_MS) {
+                const method = (requestConfig.data as { method?: string })
+                    ?.method;
+                logger.debug(
+                    `Slow provider request: method=${method ?? 'unknown'} ` +
+                        `elapsed=${Math.round(elapsedMs)}ms`,
+                );
+            }
 
             logger.verbose(
                 `Request to Provider succeeded:\nRequest:\n${JSON.stringify(

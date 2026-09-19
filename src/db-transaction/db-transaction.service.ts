@@ -8,11 +8,14 @@ export class DbTransactionService {
 
     async execute<T>(
         executable: (batch: BatchWriter) => Promise<T>,
+        onCommit?: (ms: number) => void,
     ): Promise<T> {
         const batch = this.storageService.createBatch();
         try {
             const result = await executable(batch);
+            const startedAt = process.hrtime.bigint();
             await batch.commit();
+            onCommit?.(Number(process.hrtime.bigint() - startedAt) / 1e6);
             return result;
         } catch (err) {
             // Batch is discarded (not committed) — equivalent to rollback
