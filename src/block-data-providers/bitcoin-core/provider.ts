@@ -32,6 +32,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { INDEXED_BLOCK_EVENT } from '@/common/events';
 import { btcToSats } from '@/common/common';
 import { StorageService } from '@/storage/storage.service';
+import { BlockTimer } from '@/common/telemetry';
 
 @Injectable()
 export class BitcoinCoreProvider
@@ -131,54 +132,83 @@ export class BitcoinCoreProvider
                 ((await this.traceReorg()) ?? state.indexedBlockHeight) + 1;
 
             for (height; height <= tipHeight; height++) {
+                const timer = new BlockTimer();
+
                 const { transactions, blockHash, blockTime } =
-                    await this.processBlock(height, verbosityLevel);
+                    await timer.measureAsync('processBlock', () =>
+                        this.processBlock(height, verbosityLevel),
+                    );
 
-                await this.dbTransactionService.execute(async (batch) => {
-                    const spentOutpoints: [string, number][] = [];
-                    const pendingOutputs = new Map<
-                        string,
-                        { pubKey: string; value: number }
-                    >();
+                await this.dbTransactionService.execute(
+                    async (batch) => {
+                        const spentOutpoints: [string, number][] = [];
+                        const pendingOutputs = new Map<
+                            string,
+                            { pubKey: string; value: number }
+                        >();
 
-                    for (const transaction of transactions) {
-                        const { txid, vin, vout, blockHeight, blockHash } =
-                            transaction;
-                        const saved = await this.indexTransaction(
-                            txid,
-                            vin,
-                            vout,
-                            blockHeight,
-                            blockHash,
-                            blockTime,
-                            batch,
+                        for (const transaction of transactions) {
+                            const { txid, vin, vout, blockHeight, blockHash } =
+                                transaction;
+                            timer.count('numTx');
+                            timer.count('numInputs', vin.length);
+                            timer.count('numOutputs', vout.length);
+                            const saved = await timer.measureAsync(
+                                'index',
+                                () =>
+                                    this.indexTransaction(
+                                        txid,
+                                        vin,
+                                        vout,
+                                        blockHeight,
+                                        blockHash,
+                                        blockTime,
+                                        batch,
+                                    ),
+                            );
+
+                            for (const [k, v] of saved) {
+                                pendingOutputs.set(k, v);
+                            }
+
+                            for (const input of vin) {
+                                spentOutpoints.push([input.txid, input.vout]);
+                            }
+                        }
+
+                        await timer.measureAsync('markSpent', () =>
+                            this.storageService.markOutputsSpent(
+                                batch,
+                                spentOutpoints,
+                                pendingOutputs,
+                            ),
                         );
 
-                        for (const [k, v] of saved) {
-                            pendingOutputs.set(k, v);
-                        }
+                        state.indexedBlockHeight = height;
+                        await this.setState(
+                            state,
+                            {
+                                blockHash: blockHash,
+                                blockHeight: height,
+                            },
+                            batch,
+                        );
+                    },
+                    (ms) => timer.mark('commit', ms),
+                );
 
-                        for (const input of vin) {
-                            spentOutpoints.push([input.txid, input.vout]);
-                        }
-                    }
-
-                    await this.storageService.markOutputsSpent(
-                        batch,
-                        spentOutpoints,
-                        pendingOutputs,
-                    );
-
-                    state.indexedBlockHeight = height;
-                    await this.setState(
-                        state,
-                        {
-                            blockHash: blockHash,
-                            blockHeight: height,
-                        },
-                        batch,
-                    );
-                });
+                const { phasesMs, counts, totalMs } = timer.summary();
+                this.logger.debug(
+                    `block=${height} tx=${counts.numTx ?? 0} ` +
+                        `in=${counts.numInputs ?? 0} out=${
+                            counts.numOutputs ?? 0
+                        } | ` +
+                        `processBlock=${phasesMs.processBlock ?? 0}ms ` +
+                        `index=${phasesMs.index ?? 0}ms ` +
+                        `markSpent=${phasesMs.markSpent ?? 0}ms ` +
+                        `commit=${phasesMs.commit ?? 0}ms ` +
+                        `total=${totalMs}ms`,
+                );
 
                 this.eventEmitter.emit(INDEXED_BLOCK_EVENT, height);
             }
