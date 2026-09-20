@@ -154,3 +154,14 @@ export const btcToSats = (amount: number): number => {
         precision: 0,
     }).value;
 };
+
+/**
+ * True when a scriptPubKey (hex) is a BIP-341 P2TR output:
+ * OP_1 OP_PUSHBYTES_32 <32 bytes> => "5120" + 64 hex chars.
+ *
+ * Kept as a prefix/length check rather than a regex: this runs once per input
+ * of every transaction in a block (thousands of times) in the indexing hot path.
+ */
+export const isP2TR = (scriptPubKey: string): boolean => {
+    return scriptPubKey.length === 68 && scriptPubKey.startsWith('5120');
+};
