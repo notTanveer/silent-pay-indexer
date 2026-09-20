@@ -1,11 +1,14 @@
-// Key prefixes for namespace separation in LMDB
+// Key prefixes for namespace separation in LMDB.
+// NOTE: 'idx:us:' was a per-txid unspent index, retired because the isSpent
+// byte in the `out:` value is authoritative. Databases written before that
+// change may still contain 'idx:us:' keys; nothing reads them. Do not reuse
+// that prefix for anything else.
 const PREFIX = {
     TX: Buffer.from('tx:'),
     OUTPUT: Buffer.from('out:'),
     HEIGHT_IDX: Buffer.from('idx:h:'),
     HASH_IDX: Buffer.from('idx:bh:'),
     TIME_IDX: Buffer.from('idx:bt:'),
-    UNSPENT_IDX: Buffer.from('idx:us:'),
     BLOCK_STATE: Buffer.from('bs:'),
     OP_STATE: Buffer.from('os:'),
 } as const;
@@ -49,16 +52,6 @@ export function encodeTimeIndexKey(
     const heightBuf = Buffer.alloc(4);
     heightBuf.writeUInt32BE(blockHeight);
     return Buffer.concat([PREFIX.TIME_IDX, timeBuf, heightBuf]);
-}
-
-export function encodeUnspentIndexKey(txid: string, vout: number): Buffer {
-    const voutBuf = Buffer.alloc(4);
-    voutBuf.writeUInt32BE(vout);
-    return Buffer.concat([
-        PREFIX.UNSPENT_IDX,
-        Buffer.from(txid, 'hex'),
-        voutBuf,
-    ]);
 }
 
 export function encodeBlockStateKey(height: number): Buffer {
@@ -183,16 +176,6 @@ export function decodeTimeIndexKey(key: Buffer): {
     return { blockTime, blockHeight };
 }
 
-export function decodeUnspentIndexKey(key: Buffer): {
-    txid: string;
-    vout: number;
-} {
-    const data = key.subarray(PREFIX.UNSPENT_IDX.length);
-    const txid = data.subarray(0, 32).toString('hex');
-    const vout = data.readUInt32BE(32);
-    return { txid, vout };
-}
-
 export function decodeBlockStateKey(key: Buffer): number {
     return key.readUInt32BE(PREFIX.BLOCK_STATE.length);
 }
@@ -281,18 +264,6 @@ export function outputPrefixRange(txid: string): {
     return {
         gte: Buffer.concat([PREFIX.OUTPUT, txidBuf]),
         lt: Buffer.concat([PREFIX.OUTPUT, bigEndianIncrement(txidBuf)]),
-    };
-}
-
-/** Unspent index prefix range: all unspent outputs for a specific txid */
-export function unspentPrefixRange(txid: string): {
-    gte: Buffer;
-    lt: Buffer;
-} {
-    const txidBuf = Buffer.from(txid, 'hex');
-    return {
-        gte: Buffer.concat([PREFIX.UNSPENT_IDX, txidBuf]),
-        lt: Buffer.concat([PREFIX.UNSPENT_IDX, bigEndianIncrement(txidBuf)]),
     };
 }
 

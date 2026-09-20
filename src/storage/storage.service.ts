@@ -26,17 +26,14 @@ import {
     encodeHashIndexKey,
     encodeTimeIndexKey,
     decodeTimeIndexKey,
-    encodeUnspentIndexKey,
     encodeBlockStateKey,
     decodeBlockStateKey,
     decodeHashIndexKey,
-    decodeUnspentIndexKey,
     encodeOpStateKey,
     singleHeightRange,
     heightSpanRange,
     hashIndexRange,
     outputPrefixRange,
-    unspentPrefixRange,
     blockStateRange,
     timeIndexSeek,
 } from '@/storage/key-encoding';
@@ -227,13 +224,6 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
                 pubKey: out.pubKey,
                 value: out.value,
             });
-            // Unspent index (new outputs are always unspent)
-            if (!out.isSpent) {
-                batch.put(
-                    encodeUnspentIndexKey(tx.id, out.vout),
-                    Buffer.alloc(0),
-                );
-            }
         }
 
         // Secondary indexes
@@ -251,30 +241,45 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
      * Mark outputs as spent. Reads from committed DB state, with an optional
      * pendingOutputs map for outputs that were just saved in the current batch
      * (handles same-block spends where the output isn't committed yet).
+     *
+     * Probes are issued in sorted key order. `out:` keys are prefixed by raw
+     * txid, so spending order is effectively random across the B+tree; sorting
+     * keeps shared upper-level pages hot between probes.
+     *
+     * Returns probe counts for telemetry: `probes` is the number of committed
+     * -state lookups performed, `hits` how many of those found a record.
      */
     async markOutputsSpent(
         batch: BatchWriter,
         outpoints: [string, number][],
         pendingOutputs?: Map<string, { pubKey: string; value: number }>,
-    ): Promise<void> {
+    ): Promise<{ probes: number; hits: number }> {
+        const toProbe: Buffer[] = [];
+
         for (const [txid, vout] of outpoints) {
             const key = encodeOutputKey(txid, vout);
-            const pendingKey = `${txid}:${vout}`;
 
             // Check pending outputs first (same-block spend)
-            const pending = pendingOutputs?.get(pendingKey);
+            const pending = pendingOutputs?.get(`${txid}:${vout}`);
             if (pending) {
                 batch.put(
                     key,
                     encodeOutputValue(pending.pubKey, pending.value, true),
                 );
-                batch.del(encodeUnspentIndexKey(txid, vout));
                 continue;
             }
 
+            toProbe.push(key);
+        }
+
+        toProbe.sort(Buffer.compare);
+
+        let hits = 0;
+        for (const key of toProbe) {
             // Fall back to committed DB state
             const existing = this.get(key);
             if (!existing) continue; // output not in our index (not P2TR)
+            hits++;
 
             const decoded = decodeOutputValue(existing);
             if (decoded.isSpent) continue; // already spent
@@ -284,9 +289,9 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
                 key,
                 encodeOutputValue(decoded.pubKey, decoded.value, true),
             );
-            // Remove from unspent index
-            batch.del(encodeUnspentIndexKey(txid, vout));
         }
+
+        return { probes: toProbe.length, hits };
     }
 
     saveBlockState(batch: BatchWriter, state: BlockStateData): void {
@@ -327,15 +332,10 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
             // Delete primary transaction
             batch.del(encodeTxKey(txid));
 
-            // Delete all outputs and unspent index entries
+            // Delete all outputs
             const outRange = outputPrefixRange(txid);
             const outputKeys = this.collectRange(outRange, (key) => key);
             for (const key of outputKeys) {
-                batch.del(key);
-            }
-            const unspentRange = unspentPrefixRange(txid);
-            const unspentKeys = this.collectRange(unspentRange, (key) => key);
-            for (const key of unspentKeys) {
                 batch.del(key);
             }
 
@@ -356,31 +356,11 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
         txid: string,
         filterSpent: boolean,
     ): OutputData[] {
-        if (filterSpent) {
-            // Use unspent index to only fetch unspent outputs
-            const unspentRange = unspentPrefixRange(txid);
-            const unspentVouts = this.collectRange(
-                unspentRange,
-                (key) => decodeUnspentIndexKey(key).vout,
-            );
-
-            const outputs: OutputData[] = [];
-            for (const vout of unspentVouts) {
-                const buf = this.get(encodeOutputKey(txid, vout));
-                if (!buf) continue;
-                const decoded = decodeOutputValue(buf);
-                outputs.push({
-                    transactionId: txid,
-                    vout,
-                    ...decoded,
-                });
-            }
-            return outputs;
-        }
-
-        // Fetch all outputs
+        // One ordered scan of `out:<txid>` covers both cases. The isSpent byte
+        // in the value is authoritative, so filtering in memory is strictly
+        // cheaper than consulting a separate index and re-reading each record.
         const range = outputPrefixRange(txid);
-        return this.collectRange(range, (key, value) => {
+        const outputs = this.collectRange(range, (key, value) => {
             const { vout } = decodeOutputKey(key);
             const decoded = decodeOutputValue(value);
             return {
@@ -389,6 +369,8 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
                 ...decoded,
             };
         });
+
+        return filterSpent ? outputs.filter((o) => !o.isSpent) : outputs;
     }
 
     private async fetchTransactions(
