@@ -109,12 +109,15 @@ export class EsploraProvider
         if (this.isSyncing) return;
         this.isSyncing = true;
 
-        const state = await this.getState();
-        if (!state) {
-            throw new Error('State not found');
-        }
-
         try {
+            // Inside the try: if getState() throws or comes back empty, the
+            // finally still clears the flag. Otherwise every later cron tick
+            // no-ops and the indexer stalls silently until restart.
+            const state = await this.getState();
+            if (!state) {
+                throw new Error('State not found');
+            }
+
             const tipHeight = await this.getTipHeight();
             if (tipHeight <= state.indexedBlockHeight) {
                 this.logger.log(
