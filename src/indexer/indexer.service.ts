@@ -1,5 +1,9 @@
 import { TransactionOutput as TransactionOutputEntity } from '@/transactions/transaction-output.entity';
-import { createTaggedHash, extractPubKeyFromScript } from '@/common/common';
+import {
+    createTaggedHash,
+    extractPubKeyFromScript,
+    isP2TR,
+} from '@/common/common';
 import { publicKeyCombine, publicKeyTweakMul } from 'secp256k1';
 import { Injectable } from '@nestjs/common';
 import { BatchWriter } from '@/storage/batch-writer';
@@ -73,7 +77,7 @@ export class IndexerService {
         // this output could be a potential silent pay
         let n = 0;
         for (const output of vout) {
-            if (this.isP2TR(output.scriptPubKey)) {
+            if (isP2TR(output.scriptPubKey)) {
                 const outputEntity = TransactionOutputEntity.fromOutput(
                     output,
                     n,
@@ -134,10 +138,6 @@ export class IndexerService {
         );
 
         return { scanTweak, eligibleOutputs };
-    }
-
-    private isP2TR(spk: string): boolean {
-        return !!spk.match(/^5120[0-9a-fA-F]{64}$/);
     }
 
     private getSmallestOutpoint(vins: TransactionInput[]): Buffer {

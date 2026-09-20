@@ -17,6 +17,7 @@ import { DbTransactionService } from '@/db-transaction/db-transaction.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { INDEXED_BLOCK_EVENT } from '@/common/events';
 import { StorageService } from '@/storage/storage.service';
+import { isP2TR } from '@/common/common';
 
 @Injectable()
 export class EsploraProvider
@@ -109,12 +110,15 @@ export class EsploraProvider
         if (this.isSyncing) return;
         this.isSyncing = true;
 
-        const state = await this.getState();
-        if (!state) {
-            throw new Error('State not found');
-        }
-
         try {
+            // Inside the try: if getState() throws or comes back empty, the
+            // finally still clears the flag. Otherwise every later cron tick
+            // no-ops and the indexer stalls silently until restart.
+            const state = await this.getState();
+            if (!state) {
+                throw new Error('State not found');
+            }
+
             const tipHeight = await this.getTipHeight();
             if (tipHeight <= state.indexedBlockHeight) {
                 this.logger.log(
@@ -175,6 +179,9 @@ export class EsploraProvider
                             );
 
                             for (const input of vin) {
+                                // Only a P2TR prevout can have an `out:` record;
+                                // every other input is a guaranteed miss.
+                                if (!isP2TR(input.prevOutScript)) continue;
                                 spentOutpoints.push([input.txid, input.vout]);
                             }
                             const vout = tx.vout.map((output) => ({

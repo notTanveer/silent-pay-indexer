@@ -36,11 +36,18 @@ export class BitcoinRPCUtil {
     public async waitForBitcoind(): Promise<void> {
         for (let i = 0; i < 10; i++) {
             try {
-                await this.getBlockchainInfo();
-                return;
-            } catch (error) {
-                await setTimeout(2000);
+                // `request` swallows transport errors and resolves with an
+                // error envelope rather than rejecting, so readiness has to be
+                // decided from the payload. Waiting on the absence of a throw
+                // returns on the first attempt, before bitcoind is listening.
+                const info = (await this.getBlockchainInfo()) as {
+                    chain?: string;
+                };
+                if (info?.chain) return;
+            } catch {
+                // fall through to the retry delay
             }
+            await setTimeout(2000);
         }
         throw new Error('Bitcoind refused to start');
     }

@@ -1,4 +1,4 @@
-import { btcToSats, extractPubKeyFromScript } from '@/common/common';
+import { btcToSats, extractPubKeyFromScript, isP2TR } from '@/common/common';
 
 describe('Common', () => {
     it.each([
@@ -212,4 +212,50 @@ describe('Common', () => {
             expect(btcToSats(btc)).toBe(sats);
         },
     );
+});
+
+describe('isP2TR', () => {
+    const taproot = '5120' + 'a'.repeat(64);
+
+    it.each([
+        { description: 'P2TR', spk: taproot, expected: true },
+        {
+            description: 'P2TR with uppercase payload',
+            spk: '5120' + 'A'.repeat(64),
+            expected: true,
+        },
+        {
+            description: 'P2WPKH',
+            spk: '0014751e76e8199196d454941c45d1b3a323f1433bd6',
+            expected: false,
+        },
+        {
+            description: 'P2PKH',
+            spk: '76a91419c2f3ae0ca3b642bd3e49598b8da89f50c1416188ac',
+            expected: false,
+        },
+        {
+            description: 'P2WSH (32-byte push, but witness v0)',
+            spk: '0020' + 'a'.repeat(64),
+            expected: false,
+        },
+        {
+            description: 'witness v2 (OP_2, ineligible for silent payments)',
+            spk: '5220' + 'a'.repeat(64),
+            expected: false,
+        },
+        {
+            description: 'truncated P2TR',
+            spk: '5120' + 'a'.repeat(62),
+            expected: false,
+        },
+        {
+            description: 'over-long P2TR',
+            spk: '5120' + 'a'.repeat(66),
+            expected: false,
+        },
+        { description: 'empty script', spk: '', expected: false },
+    ])('should return $expected for $description', ({ spk, expected }) => {
+        expect(isP2TR(spk)).toBe(expected);
+    });
 });

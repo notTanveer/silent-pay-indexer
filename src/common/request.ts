@@ -1,11 +1,42 @@
 import { Logger } from '@nestjs/common';
 import { AxiosError, AxiosRequestConfig } from 'axios';
 import axios from 'axios';
+import * as http from 'http';
+import * as https from 'https';
 
 /** Provider requests slower than this (ms) are logged at debug for triage. */
 const SLOW_REQUEST_THRESHOLD_MS = 250;
 
+/**
+ * Bitcoin Core drops idle RPC connections after -rpcservertimeout (30s by
+ * default). Retire pooled sockets before it does, so we don't write to a
+ * half-closed one and take EPIPE/ECONNRESET on the next request.
+ *
+ * Note this is a socket timeout, so it also caps a single in-flight request;
+ * 20s leaves ample headroom over a verbosity-3 getblock (~2-4s), and the retry
+ * below covers the rare loser. It is a timer, so it cannot fire while the event
+ * loop is blocked -- keeping the indexing phases short is the real guard.
+ */
+const KEEP_ALIVE_TIMEOUT_MS = 20_000;
+
+const httpAgent = new http.Agent({
+    keepAlive: true,
+    timeout: KEEP_ALIVE_TIMEOUT_MS,
+});
+const httpsAgent = new https.Agent({
+    keepAlive: true,
+    timeout: KEEP_ALIVE_TIMEOUT_MS,
+});
+
 const axiosStatus = (error: AxiosError) => error.status || error.code;
+
+/** Request config safe to log: strips the RPC credentials. */
+const redactConfig = (config: AxiosRequestConfig) => ({
+    ...config,
+    auth: config.auth
+        ? { username: config.auth.username, password: '[REDACTED]' }
+        : undefined,
+});
 
 const axiosErrorResponse = (error: AxiosError) =>
     error.response?.data || error.message;
@@ -29,7 +60,11 @@ export const makeRequest = async (
     for (let count = 1; count <= retryConfig.count; count++) {
         try {
             const startedAt = process.hrtime.bigint();
-            const response = await axios.request(requestConfig);
+            const response = await axios.request({
+                httpAgent,
+                httpsAgent,
+                ...requestConfig,
+            });
             const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
 
             if (elapsedMs > SLOW_REQUEST_THRESHOLD_MS) {
@@ -41,12 +76,14 @@ export const makeRequest = async (
                 );
             }
 
+            // Deliberately does not serialise the response: a verbosity-3
+            // getblock is multi-MB, and the template literal is built eagerly
+            // regardless of whether the verbose level is enabled.
             logger.verbose(
-                `Request to Provider succeeded:\nRequest:\n${JSON.stringify(
-                    requestConfig,
-                    null,
-                    2,
-                )}\nResponse:\n${JSON.stringify(response.data, null, 2)}`,
+                `Request to Provider succeeded: method=${
+                    (requestConfig.data as { method?: string })?.method ??
+                    'unknown'
+                } elapsed=${Math.round(elapsedMs)}ms`,
             );
 
             return response.data;
@@ -66,7 +103,9 @@ export const makeRequest = async (
                 logger.error(
                     `Retrying Request to Provider with retry count: ${count}\n` +
                         `Status code: ${axiosStatus(error)}\n` +
-                        `Request:${JSON.stringify(requestConfig)}`,
+                        `Request:${JSON.stringify(
+                            redactConfig(requestConfig),
+                        )}`,
                 );
 
                 await exponentialDelay(count, retryConfig);
@@ -93,6 +132,14 @@ export const makeRequest = async (
     }
 };
 
+/**
+ * Transport-level failures worth retrying: no HTTP response came back.
+ *
+ * Note ECONNABORTED is excluded, which is the code axios uses for its own
+ * request timeout. No `timeout` is set on our requests today; if one is ever
+ * added, update this predicate at the same time or those timeouts will silently
+ * become non-retryable.
+ */
 export const isNetworkError = (error) => {
     return !(
         error.response ||

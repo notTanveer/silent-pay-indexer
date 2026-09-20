@@ -30,7 +30,7 @@ import { BlockStateService } from '@/block-state/block-state.service';
 import { DbTransactionService } from '@/db-transaction/db-transaction.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { INDEXED_BLOCK_EVENT } from '@/common/events';
-import { btcToSats } from '@/common/common';
+import { btcToSats, isP2TR } from '@/common/common';
 import { StorageService } from '@/storage/storage.service';
 import { BlockTimer } from '@/common/telemetry';
 
@@ -109,13 +109,16 @@ export class BitcoinCoreProvider
         if (this.isSyncing) return;
         this.isSyncing = true;
 
-        const state = await this.getState();
-
-        if (!state) {
-            throw new Error('State not found');
-        }
-
         try {
+            // Inside the try: if getState() throws or comes back empty, the
+            // finally still clears the flag. Otherwise every later cron tick
+            // no-ops and the indexer stalls silently until restart.
+            const state = await this.getState();
+
+            if (!state) {
+                throw new Error('State not found');
+            }
+
             const tipHeight = await this.getTipHeight();
 
             if (tipHeight <= state.indexedBlockHeight) {
@@ -172,17 +175,28 @@ export class BitcoinCoreProvider
                             }
 
                             for (const input of vin) {
+                                // Only a P2TR prevout can have an `out:` record,
+                                // so anything else is a guaranteed miss. Skipping
+                                // it avoids a full B+tree descent per input.
+                                if (!isP2TR(input.prevOutScript)) {
+                                    timer.count('skipped');
+                                    continue;
+                                }
                                 spentOutpoints.push([input.txid, input.vout]);
                             }
                         }
 
-                        await timer.measureAsync('markSpent', () =>
-                            this.storageService.markOutputsSpent(
-                                batch,
-                                spentOutpoints,
-                                pendingOutputs,
-                            ),
+                        const spendStats = await timer.measureAsync(
+                            'markSpent',
+                            () =>
+                                this.storageService.markOutputsSpent(
+                                    batch,
+                                    spentOutpoints,
+                                    pendingOutputs,
+                                ),
                         );
+                        timer.count('probes', spendStats.probes);
+                        timer.count('hits', spendStats.hits);
 
                         state.indexedBlockHeight = height;
                         await this.setState(
@@ -206,6 +220,9 @@ export class BitcoinCoreProvider
                         `processBlock=${phasesMs.processBlock ?? 0}ms ` +
                         `index=${phasesMs.index ?? 0}ms ` +
                         `markSpent=${phasesMs.markSpent ?? 0}ms ` +
+                        `(probes=${counts.probes ?? 0} hits=${
+                            counts.hits ?? 0
+                        } skipped=${counts.skipped ?? 0}) ` +
                         `commit=${phasesMs.commit ?? 0}ms ` +
                         `total=${totalMs}ms`,
                 );
