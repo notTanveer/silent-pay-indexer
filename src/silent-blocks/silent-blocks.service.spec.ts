@@ -6,6 +6,7 @@ import { silentBlockEncodingFixture } from '@/silent-blocks/silent-blocks.servic
 import { SilentBlocksGateway } from '@/silent-blocks/silent-blocks.gateway';
 import { BlockStateService } from '@/block-state/block-state.service';
 import { StorageService } from '@/storage/storage.service';
+import { PartitionManager } from '@/storage/partition-manager';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -14,6 +15,7 @@ import * as os from 'os';
 describe('SilentBlocksService', () => {
     let service: SilentBlocksService;
     let storageService: StorageService;
+    let partitions: PartitionManager;
     let tmpDir: string;
 
     beforeEach(async () => {
@@ -25,11 +27,18 @@ describe('SilentBlocksService', () => {
                 SilentBlocksService,
                 TransactionsService,
                 StorageService,
+                PartitionManager,
                 {
                     provide: ConfigService,
                     useValue: {
                         get: (key: string) => {
                             if (key === 'db.path') return tmpDir;
+                            // Small partitions so tests cross boundaries.
+                            if (key === 'db.partitionBlocks') return 5;
+                            if (key === 'db.partitionMapSize')
+                                return 16 * 1024 * 1024;
+                            if (key === 'db.mapSize') return 16 * 1024 * 1024;
+                            if (key === 'db.openPartitions') return 2;
                             return null;
                         },
                     },
@@ -51,8 +60,9 @@ describe('SilentBlocksService', () => {
             ],
         }).compile();
 
+        partitions = module.get<PartitionManager>(PartitionManager);
+        partitions.onModuleInit();
         storageService = module.get<StorageService>(StorageService);
-        await storageService.onModuleInit();
         service = module.get<SilentBlocksService>(SilentBlocksService);
     });
 
@@ -74,6 +84,12 @@ describe('SilentBlocksService', () => {
                     })),
                 });
             }
+            // A block hash resolves to a height through the global index,
+            // which block state owns.
+            storageService.saveBlockState(batch, {
+                blockHeight: transactions[0].blockHeight,
+                blockHash: transactions[0].blockHash,
+            });
             await batch.commit();
 
             const encodedBlock = await service.getSilentBlockByHeight(
@@ -97,6 +113,12 @@ describe('SilentBlocksService', () => {
                     })),
                 });
             }
+            // A block hash resolves to a height through the global index,
+            // which block state owns.
+            storageService.saveBlockState(batch, {
+                blockHeight: transactions[0].blockHeight,
+                blockHash: transactions[0].blockHash,
+            });
             await batch.commit();
 
             const encodedBlock = await service.getSilentBlockByHash(blockHash);
@@ -106,7 +128,7 @@ describe('SilentBlocksService', () => {
     );
 
     afterEach(async () => {
-        await storageService.onModuleDestroy();
+        await partitions.onModuleDestroy();
         fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 });

@@ -13,6 +13,7 @@ import { DbTransactionModule } from '@/db-transaction/db-transaction.module';
 import { DbTransactionService } from '@/db-transaction/db-transaction.service';
 import { EventEmitter2, EventEmitterModule } from '@nestjs/event-emitter';
 import { StorageService } from '@/storage/storage.service';
+import { PartitionManager } from '@/storage/partition-manager';
 
 @Module({
     imports: [
@@ -35,6 +36,7 @@ import { StorageService } from '@/storage/storage.service';
                 DbTransactionService,
                 EventEmitter2,
                 StorageService,
+                PartitionManager,
             ],
             useFactory: (
                 configService: ConfigService,
@@ -44,6 +46,7 @@ import { StorageService } from '@/storage/storage.service';
                 dbTransactionService: DbTransactionService,
                 eventEmitter: EventEmitter2,
                 storageService: StorageService,
+                partitionManager: PartitionManager,
             ) => {
                 switch (configService.get<ProviderType>('providerType')) {
                     case ProviderType.ESPLORA:
@@ -65,6 +68,7 @@ import { StorageService } from '@/storage/storage.service';
                             dbTransactionService,
                             eventEmitter,
                             storageService,
+                            partitionManager,
                         );
                     default:
                         throw Error('unrecognised provider type in config');

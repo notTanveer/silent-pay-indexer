@@ -79,37 +79,39 @@ export class EsploraProvider
 
     async onApplicationBootstrap() {
         const currentState = await this.getState();
+        let indexedBlockHeight: number;
+
         if (currentState) {
             this.logger.log(
                 `Restoring state from previous run: ${JSON.stringify(
                     currentState,
                 )}`,
             );
+            indexedBlockHeight = currentState.indexedBlockHeight;
         } else {
             this.logger.log('No previous state found. Starting from scratch.');
 
-            const blockHeight =
+            indexedBlockHeight =
                 this.configService.get<BitcoinNetwork>('app.network') ===
                 BitcoinNetwork.MAINNET
                     ? BIP352_ACTIVATION_HEIGHT - 1
                     : 0;
-            const blockHash = await this.getBlockHash(blockHeight);
+            const blockHash = await this.getBlockHash(indexedBlockHeight);
 
             await this.dbTransactionService.execute(async (batch) => {
                 await this.setState(
                     {
                         currentBlockHeight: 0,
-                        indexedBlockHeight: blockHeight,
+                        indexedBlockHeight,
                         lastProcessedTxIndex: 0, // we don't take coinbase txn into account
                     },
-                    {
-                        blockHash,
-                        blockHeight,
-                    },
+                    { blockHash, blockHeight: indexedBlockHeight },
                     batch,
                 );
             });
         }
+
+        await this.purgeAboveIndexedTip(indexedBlockHeight);
     }
 
     @Cron(CronExpression.EVERY_10_SECONDS)

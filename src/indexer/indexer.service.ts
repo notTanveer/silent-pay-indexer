@@ -81,7 +81,6 @@ export class IndexerService {
             vout: out.vout,
             pubKey: out.pubKey,
             value: out.value,
-            isSpent: false,
         }));
 
         return {

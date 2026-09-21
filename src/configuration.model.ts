@@ -17,10 +17,14 @@ import { Type } from 'class-transformer';
 import { BitcoinNetwork, ProviderType } from '@/common/enum';
 
 class DbConfig {
+    // A plain directory holding `global/` and `parts/`, not an LMDB
+    // environment itself.
     @IsNotEmpty()
     @IsString()
     path: string;
 
+    // Applies to the global environment only; partitions are sized by
+    // partitionMapSize.
     @IsInt()
     @Min(1)
     mapSize: number;
@@ -29,6 +33,25 @@ class DbConfig {
     @IsInt()
     @Min(1)
     commitBatchBlocks?: number;
+
+    @IsOptional()
+    @IsInt()
+    @Min(1)
+    partitionBlocks?: number;
+
+    @IsOptional()
+    @IsInt()
+    @Min(1)
+    partitionMapSize?: number;
+
+    // Counts partition environments only; the global environment is held
+    // separately and is never evicted. At least two so a range query that
+    // straddles a partition boundary does not close and reopen an environment
+    // for every span it walks.
+    @IsOptional()
+    @IsInt()
+    @Min(2)
+    openPartitions?: number;
 }
 
 class AxiosRetryConfig {

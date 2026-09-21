@@ -42,8 +42,32 @@ export const MAX_BLOCK_RANGE = 50;
  *
  * Only applies to catch-up. At the tip there is one block to write, so the
  * batch is naturally a single block and visibility is unaffected.
+ *
+ * A batch is additionally clamped to a partition boundary, so a run of blocks
+ * spanning one never becomes a single write transaction.
  */
 export const DEFAULT_COMMIT_BATCH_BLOCKS = 25;
+
+/**
+ * Heights per storage partition.
+ *
+ * Partitioning exists so that the working set of a write is the partition
+ * being indexed rather than the whole chain: at ~0.9MB/block, 1000 blocks is
+ * ~0.9GB, which stays resident in page cache while sealed partitions do not
+ * compete for it. Smaller partitions buy more cache headroom as blocks grow;
+ * larger ones mean fewer directories.
+ */
+export const DEFAULT_PARTITION_BLOCKS = 1000;
+
+/**
+ * Map size per partition. This is a ceiling on virtual address space, not a
+ * preallocation — LMDB grows the file lazily. Sizing it per partition rather
+ * than for the whole chain is what removes the MDB_MAP_FULL cliff.
+ */
+export const DEFAULT_PARTITION_MAP_SIZE = 2 * 1024 * 1024 * 1024; // 2 GB
+
+/** How many partition environments to keep open, least-recently-used first. */
+export const DEFAULT_OPEN_PARTITIONS = 8;
 
 /**
  * Cache lifetime for `GET transactions/txid/:txid`.

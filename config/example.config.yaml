@@ -1,10 +1,28 @@
 db:
+  # A plain directory. It holds `global/` and one environment per partition
+  # under `parts/`; it is not an LMDB environment itself.
   path: '~/.silent-pay-indexer/db/lmdb'
-  mapSize: 10737418240 # 10 GB — LMDB pre-configured max; grows lazily
+  # Applies to the global environment only (block state, operation state, the
+  # hash and timestamp indexes) — a few tens of MB at full chain.
+  mapSize: 1073741824 # 1 GB — pre-configured max; grows lazily
   # Blocks per write transaction while catching up. Larger batches amortise
   # the B+tree pages every commit rewrites; a crash re-indexes at most this
-  # many blocks. Ignored at the tip, where there is one block to write.
+  # many blocks. Ignored at the tip, where there is one block to write, and
+  # clamped so a batch never spans two partitions.
   commitBatchBlocks: 25
+  # Heights per partition. Writes only ever touch the partition holding the
+  # block being indexed, so this sets the working set: ~0.9MB/block means
+  # 1000 blocks is ~0.9GB, small enough to stay in page cache while sealed
+  # partitions do not compete for it.
+  #
+  # Fixed for the life of a database: it decides which directory each height
+  # lives in, so changing it orphans everything already indexed. The value is
+  # recorded on first run and startup fails if it later disagrees.
+  partitionBlocks: 1000
+  # Per-partition max size. A ceiling on address space, not a preallocation.
+  partitionMapSize: 2147483648 # 2 GB
+  # Partition environments kept open, least-recently-used evicted first.
+  openPartitions: 8
 app:
   port: 80
   # Interface to bind to. Omit (or use 0.0.0.0) to listen on all interfaces;

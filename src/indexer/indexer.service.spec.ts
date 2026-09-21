@@ -3,6 +3,7 @@ import { IndexerService } from '@/indexer/indexer.service';
 import { testData } from '@/indexer/indexer.fixture';
 import { DbTransactionService } from '@/db-transaction/db-transaction.service';
 import { StorageService } from '@/storage/storage.service';
+import { PartitionManager } from '@/storage/partition-manager';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -11,6 +12,7 @@ import * as os from 'os';
 describe('IndexerService', () => {
     let service: IndexerService;
     let storageService: StorageService;
+    let partitions: PartitionManager;
     let dbTransactionService: DbTransactionService;
     let tmpDir: string;
 
@@ -22,11 +24,18 @@ describe('IndexerService', () => {
                 IndexerService,
                 DbTransactionService,
                 StorageService,
+                PartitionManager,
                 {
                     provide: ConfigService,
                     useValue: {
                         get: (key: string) => {
                             if (key === 'db.path') return tmpDir;
+                            // Small partitions so tests cross boundaries.
+                            if (key === 'db.partitionBlocks') return 5;
+                            if (key === 'db.partitionMapSize')
+                                return 16 * 1024 * 1024;
+                            if (key === 'db.mapSize') return 16 * 1024 * 1024;
+                            if (key === 'db.openPartitions') return 2;
                             return null;
                         },
                     },
@@ -34,8 +43,9 @@ describe('IndexerService', () => {
             ],
         }).compile();
 
+        partitions = module.get<PartitionManager>(PartitionManager);
+        partitions.onModuleInit();
         storageService = module.get<StorageService>(StorageService);
-        await storageService.onModuleInit();
 
         service = module.get<IndexerService>(IndexerService);
         dbTransactionService =
@@ -77,7 +87,7 @@ describe('IndexerService', () => {
     );
 
     afterEach(async () => {
-        await storageService.onModuleDestroy();
+        await partitions.onModuleDestroy();
         fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 });

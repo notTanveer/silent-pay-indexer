@@ -43,15 +43,6 @@ export class TransactionsService {
         return this.blockDataProvider.getTransactionForTweak(txid);
     }
 
-    async deleteTransactionByBlockHash(blockHash: string): Promise<void> {
-        const batch = this.storageService.createBatch();
-        await this.storageService.deleteTransactionsByBlockHash(
-            batch,
-            blockHash,
-        );
-        await batch.commit();
-    }
-
     async getBlockHeightByTimestamp(
         timestamp: number,
     ): Promise<{ blockHeight: number }> {

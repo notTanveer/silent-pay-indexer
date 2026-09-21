@@ -20,6 +20,7 @@ import { BlockStateService } from '@/block-state/block-state.service';
 import { DbTransactionService } from '@/db-transaction/db-transaction.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { StorageService } from '@/storage/storage.service';
+import { PartitionManager } from '@/storage/partition-manager';
 import { BitcoinNetwork } from '@/common/enum';
 
 describe('Bitcoin Core Provider', () => {
@@ -70,6 +71,13 @@ describe('Bitcoin Core Provider', () => {
                 {
                     provide: EventEmitter2,
                     useValue: jest.fn(),
+                },
+                {
+                    provide: PartitionManager,
+                    useValue: {
+                        clampBatchEnd: jest.fn(),
+                        partitionIndex: jest.fn(),
+                    },
                 },
                 {
                     provide: StorageService,

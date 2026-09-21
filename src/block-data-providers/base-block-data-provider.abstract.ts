@@ -77,6 +77,26 @@ export abstract class BaseBlockDataProvider<OperationState> {
         this.storageService.saveBlockState(batch, blockState);
     }
 
+    /**
+     * Drops anything indexed above the recorded tip before resuming.
+     *
+     * A batch commits its partition before the global environment, so a crash
+     * in between can leave blocks written that no block-state record claims.
+     * Replaying them is harmless on its own, but if the chain reorged while the
+     * process was down, traceReorg would see a matching tip, resume, and index
+     * the replacement block on top of the originals, which nothing would then
+     * ever delete.
+     */
+    protected async purgeAboveIndexedTip(tipHeight: number): Promise<void> {
+        const batch = this.storageService.createBatch();
+        try {
+            this.storageService.purgeAboveHeight(batch, tipHeight);
+            await batch.commit();
+        } finally {
+            batch.dispose();
+        }
+    }
+
     abstract getBlockHash(height: number): Promise<string>;
 
     /**

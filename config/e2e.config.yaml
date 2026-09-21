@@ -1,7 +1,12 @@
 db:
   path: '/tmp/silent-pay-indexer-e2e-lmdb'
-  mapSize: 1073741824 # 1 GB — small map for e2e tests
-  commitBatchBlocks: 25 # exercise the batched-commit path
+  mapSize: 67108864 # 64 MB — global env only
+  commitBatchBlocks: 25 # clamped to partitionBlocks; exercises the clamp
+  # Deliberately tiny so a regtest run crosses dozens of boundaries and the
+  # LRU actually evicts. Production uses 1000.
+  partitionBlocks: 5
+  partitionMapSize: 67108864 # 64 MB
+  openPartitions: 2
 app:
   port: 3000
   verbose: false

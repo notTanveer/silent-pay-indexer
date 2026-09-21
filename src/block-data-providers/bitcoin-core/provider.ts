@@ -38,6 +38,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { INDEXED_BLOCK_EVENT } from '@/common/events';
 import { btcToSats } from '@/common/common';
 import { StorageService } from '@/storage/storage.service';
+import { PartitionManager } from '@/storage/partition-manager';
 import { BlockTimer } from '@/common/telemetry';
 
 /** RPC_INVALID_ADDRESS_OR_KEY: the txid is in neither the mempool nor a block. */
@@ -73,6 +74,7 @@ export class BitcoinCoreProvider
         private readonly dbTransactionService: DbTransactionService,
         protected readonly eventEmitter: EventEmitter2,
         storageService: StorageService,
+        private readonly partitionManager: PartitionManager,
     ) {
         super(
             configService,
@@ -97,35 +99,35 @@ export class BitcoinCoreProvider
 
     async onApplicationBootstrap() {
         const currentState = await this.getState();
+        let indexedBlockHeight: number;
+
         if (currentState) {
             this.logger.log(
                 `Restoring state from previous run: ${JSON.stringify(
                     currentState,
                 )}`,
             );
+            indexedBlockHeight = currentState.indexedBlockHeight;
         } else {
             this.logger.log('No previous state found. Starting from scratch.');
 
-            const blockHeight =
+            indexedBlockHeight =
                 this.configService.get<BitcoinNetwork>('app.network') ===
                 BitcoinNetwork.MAINNET
                     ? BIP352_ACTIVATION_HEIGHT - 1
                     : 0;
-            const blockHash = await this.getBlockHash(blockHeight);
+            const blockHash = await this.getBlockHash(indexedBlockHeight);
 
             await this.dbTransactionService.execute(async (batch) => {
                 await this.setState(
-                    {
-                        indexedBlockHeight: blockHeight,
-                    },
-                    {
-                        blockHash,
-                        blockHeight,
-                    },
+                    { indexedBlockHeight },
+                    { blockHash, blockHeight: indexedBlockHeight },
                     batch,
                 );
             });
         }
+
+        await this.purgeAboveIndexedTip(indexedBlockHeight);
     }
 
     @Cron(CronExpression.EVERY_10_SECONDS)
@@ -163,8 +165,12 @@ export class BitcoinCoreProvider
                 // One write transaction per run of blocks. Committing each
                 // block separately re-walks and rewrites the same B+tree
                 // interior pages every time; batching amortises them.
-                const batchEnd = Math.min(
-                    height + this.commitBatchBlocks - 1,
+                // Clamped to a partition boundary, so a batch is never split
+                // across two environments. That is what bounds crash recovery
+                // to the single partition holding the first unindexed height.
+                const batchEnd = this.partitionManager.clampBatchEnd(
+                    height,
+                    this.commitBatchBlocks,
                     tipHeight,
                 );
                 const timer = new BlockTimer();
@@ -224,6 +230,9 @@ export class BitcoinCoreProvider
                 const blocks = indexedHeights.length;
                 this.logger.debug(
                     `blocks=${height}-${batchEnd} (${blocks}) ` +
+                        `part=${this.partitionManager.partitionIndex(
+                            height,
+                        )} ` +
                         `tx=${counts.numTx ?? 0} ` +
                         `in=${counts.numInputs ?? 0} out=${
                             counts.numOutputs ?? 0

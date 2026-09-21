@@ -5,15 +5,19 @@ import { StorageService } from '@/storage/storage.service';
 describe('DbTransactionService', () => {
     let service: DbTransactionService;
     let mockCommit: jest.Mock;
+    let mockDispose: jest.Mock;
 
     beforeEach(async () => {
         mockCommit = jest.fn().mockResolvedValue(undefined);
+        mockDispose = jest.fn();
 
         const mockStorageService = {
             createBatch: jest.fn().mockReturnValue({
                 put: jest.fn().mockReturnThis(),
                 del: jest.fn().mockReturnThis(),
+                adopt: jest.fn((lease) => lease),
                 commit: mockCommit,
+                dispose: mockDispose,
             }),
         };
 
@@ -53,5 +57,8 @@ describe('DbTransactionService', () => {
 
         expect(dummyExecutable).toHaveBeenCalledTimes(1);
         expect(mockCommit).toHaveBeenCalledTimes(0);
+        // An abandoned batch still holds leases on the environments it
+        // touched, which would pin them against eviction forever.
+        expect(mockDispose).toHaveBeenCalledTimes(1);
     });
 });
