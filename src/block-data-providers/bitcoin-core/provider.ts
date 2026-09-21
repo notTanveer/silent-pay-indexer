@@ -31,7 +31,7 @@ import { BlockStateService } from '@/block-state/block-state.service';
 import { DbTransactionService } from '@/db-transaction/db-transaction.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { INDEXED_BLOCK_EVENT } from '@/common/events';
-import { btcToSats, isP2TR } from '@/common/common';
+import { btcToSats } from '@/common/common';
 import { StorageService } from '@/storage/storage.service';
 import { BlockTimer } from '@/common/telemetry';
 
@@ -153,22 +153,11 @@ export class BitcoinCoreProvider
 
                 await this.dbTransactionService.execute(
                     async (batch) => {
-                        // Spans the whole batch, not one block: an output
-                        // created in one block and spent in a later block of
-                        // the same batch is not committed yet, so the spend can
-                        // only be resolved from here.
-                        const pendingOutputs = new Map<
-                            string,
-                            { pubKey: string; value: number }
-                        >();
-
                         for (let h = height; h <= batchEnd; h++) {
                             const { transactions, blockHash, blockTime } =
                                 await timer.measureAsync('processBlock', () =>
                                     this.processBlock(h, verbosityLevel),
                                 );
-
-                            const spentOutpoints: [string, number][] = [];
 
                             for (const transaction of transactions) {
                                 const {
@@ -181,51 +170,18 @@ export class BitcoinCoreProvider
                                 timer.count('numTx');
                                 timer.count('numInputs', vin.length);
                                 timer.count('numOutputs', vout.length);
-                                const saved = await timer.measureAsync(
-                                    'index',
-                                    () =>
-                                        this.indexTransaction(
-                                            txid,
-                                            vin,
-                                            vout,
-                                            blockHeight,
-                                            txBlockHash,
-                                            blockTime,
-                                            batch,
-                                        ),
-                                );
-
-                                for (const [k, v] of saved) {
-                                    pendingOutputs.set(k, v);
-                                }
-
-                                for (const input of vin) {
-                                    // Only a P2TR prevout can have an `out:`
-                                    // record, so anything else is a guaranteed
-                                    // miss. Skipping it avoids a full B+tree
-                                    // descent per input.
-                                    if (!isP2TR(input.prevOutScript)) {
-                                        timer.count('skipped');
-                                        continue;
-                                    }
-                                    spentOutpoints.push([
-                                        input.txid,
-                                        input.vout,
-                                    ]);
-                                }
-                            }
-
-                            const spendStats = await timer.measureAsync(
-                                'markSpent',
-                                () =>
-                                    this.storageService.markOutputsSpent(
+                                await timer.measureAsync('index', () =>
+                                    this.indexTransaction(
+                                        txid,
+                                        vin,
+                                        vout,
+                                        blockHeight,
+                                        txBlockHash,
+                                        blockTime,
                                         batch,
-                                        spentOutpoints,
-                                        pendingOutputs,
                                     ),
-                            );
-                            timer.count('probes', spendStats.probes);
-                            timer.count('hits', spendStats.hits);
+                                );
+                            }
 
                             // Written per block, not once per batch: traceReorg
                             // walks block state one height at a time, so every
@@ -255,10 +211,6 @@ export class BitcoinCoreProvider
                         } | ` +
                         `processBlock=${phasesMs.processBlock ?? 0}ms ` +
                         `index=${phasesMs.index ?? 0}ms ` +
-                        `markSpent=${phasesMs.markSpent ?? 0}ms ` +
-                        `(probes=${counts.probes ?? 0} hits=${
-                            counts.hits ?? 0
-                        } skipped=${counts.skipped ?? 0}) ` +
                         `commit=${phasesMs.commit ?? 0}ms ` +
                         `total=${totalMs}ms ` +
                         `perBlock=${(totalMs / blocks).toFixed(1)}ms`,

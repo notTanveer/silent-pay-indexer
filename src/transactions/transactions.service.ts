@@ -8,41 +8,28 @@ export class TransactionsService {
 
     async getTransactionByBlockHeight(
         blockHeight: number,
-        filterSpent: boolean,
     ): Promise<TransactionData[]> {
-        return this.storageService.getTransactionsByBlockHeight(
-            blockHeight,
-            filterSpent,
-        );
+        return this.storageService.getTransactionsByBlockHeight(blockHeight);
     }
 
     async getTransactionsByBlockHeightRange(
         startHeight: number,
         endHeight: number,
-        filterSpent: boolean,
     ): Promise<TransactionData[]> {
         return this.storageService.getTransactionsByBlockHeightRange(
             startHeight,
             endHeight,
-            filterSpent,
         );
     }
 
     async getTransactionByBlockHash(
         blockHash: string,
-        filterSpent: boolean,
     ): Promise<TransactionData[]> {
-        return this.storageService.getTransactionsByBlockHash(
-            blockHash,
-            filterSpent,
-        );
+        return this.storageService.getTransactionsByBlockHash(blockHash);
     }
 
-    async getTransactionByTxid(
-        txid: string,
-        filterSpent: boolean,
-    ): Promise<TransactionData | null> {
-        return this.storageService.getTransactionByTxid(txid, filterSpent);
+    async getTransactionByTxid(txid: string): Promise<TransactionData | null> {
+        return this.storageService.getTransactionByTxid(txid);
     }
 
     async deleteTransactionByBlockHash(blockHash: string): Promise<void> {

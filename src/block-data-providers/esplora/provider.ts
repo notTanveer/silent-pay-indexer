@@ -17,7 +17,6 @@ import { DbTransactionService } from '@/db-transaction/db-transaction.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { INDEXED_BLOCK_EVENT } from '@/common/events';
 import { StorageService } from '@/storage/storage.service';
-import { isP2TR } from '@/common/common';
 
 @Injectable()
 export class EsploraProvider
@@ -159,12 +158,6 @@ export class EsploraProvider
 
             try {
                 await this.dbTransactionService.execute(async (batch) => {
-                    const spentOutpoints: [string, number][] = [];
-                    const pendingOutputs = new Map<
-                        string,
-                        { pubKey: string; value: number }
-                    >();
-
                     await Promise.all(
                         txBatch.map(async (txid) => {
                             const tx = await this.getTx(txid);
@@ -178,18 +171,12 @@ export class EsploraProvider
                                 }),
                             );
 
-                            for (const input of vin) {
-                                // Only a P2TR prevout can have an `out:` record;
-                                // every other input is a guaranteed miss.
-                                if (!isP2TR(input.prevOutScript)) continue;
-                                spentOutpoints.push([input.txid, input.vout]);
-                            }
                             const vout = tx.vout.map((output) => ({
                                 scriptPubKey: output.scriptpubkey,
                                 value: output.value,
                             }));
 
-                            const saved = await this.indexTransaction(
+                            await this.indexTransaction(
                                 txid,
                                 vin,
                                 vout,
@@ -198,17 +185,7 @@ export class EsploraProvider
                                 tx.status.block_time,
                                 batch,
                             );
-
-                            for (const [k, v] of saved) {
-                                pendingOutputs.set(k, v);
-                            }
                         }, this),
-                    );
-
-                    await this.storageService.markOutputsSpent(
-                        batch,
-                        spentOutpoints,
-                        pendingOutputs,
                     );
 
                     state.indexedBlockHeight = height;

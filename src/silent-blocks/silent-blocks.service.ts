@@ -21,10 +21,7 @@ export class SilentBlocksService {
     @OnEvent(INDEXED_BLOCK_EVENT)
     async handleBlockIndexedEvent(blockHeight: number) {
         this.logger.debug(`New block indexed: ${blockHeight}`);
-        const silentBlock = await this.getSilentBlockByHeight(
-            blockHeight,
-            false,
-        );
+        const silentBlock = await this.getSilentBlockByHeight(blockHeight);
         this.silentBlocksGateway.broadcastSilentBlock(silentBlock);
     }
 
@@ -62,28 +59,18 @@ export class SilentBlocksService {
         return block;
     }
 
-    async getSilentBlockByHeight(
-        blockHeight: number,
-        filterSpent: boolean,
-    ): Promise<Buffer> {
+    async getSilentBlockByHeight(blockHeight: number): Promise<Buffer> {
         const transactions =
             await this.transactionsService.getTransactionByBlockHeight(
                 blockHeight,
-                filterSpent,
             );
 
         return this.encodeSilentBlock(transactions);
     }
 
-    async getSilentBlockByHash(
-        blockHash: string,
-        filterSpent: boolean,
-    ): Promise<Buffer> {
+    async getSilentBlockByHash(blockHash: string): Promise<Buffer> {
         const transactions =
-            await this.transactionsService.getTransactionByBlockHash(
-                blockHash,
-                filterSpent,
-            );
+            await this.transactionsService.getTransactionByBlockHash(blockHash);
 
         return this.encodeSilentBlock(transactions);
     }

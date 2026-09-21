@@ -32,7 +32,7 @@ export abstract class BaseBlockDataProvider<OperationState> {
         blockHash: string,
         blockTime: number,
         batch: BatchWriter,
-    ): Promise<Map<string, { pubKey: string; value: number }>> {
+    ): Promise<void> {
         return this.indexerService.index(
             txid,
             vin,

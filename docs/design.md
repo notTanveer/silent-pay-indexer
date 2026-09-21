@@ -7,7 +7,9 @@
 The silent payment indexer should serve a silent payment index for each block.
 For each block the indexer serves data in a compact block style format (referred to as *“silent block”*).
 The silent block is designed to contain everything that a silent payment wallet needs to scan and spend outputs.
-The indexer should update the old silent block once the outputs generated in that block are spent.
+A silent block is immutable once written: spending an output it contains does not change it.
+Whether an output is still unspent is a UTXO-set question, which a wallet answers against its
+own node rather than from this index.
 
 ---
 
@@ -26,7 +28,7 @@ We don’t need to store the `script_pub_key` because if we have the private key
 
 ## Specification for silent block
 
-- It contains only unspent outputs created in that block.
+- It contains every eligible silent payment output created in that block, spent or not.
 - It contains the following items for each transaction in a block:
     - `txid` of the transaction
     - `pub_key` (not `script_pub_key`, just 32 byte x-only public key) of each eligible silent payment output (silent payment outputs are always P2TR)

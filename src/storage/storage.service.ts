@@ -99,15 +99,12 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
 
     // --- Transaction reads ---
 
-    async getTransactionByTxid(
-        txid: string,
-        filterSpent: boolean,
-    ): Promise<TransactionData | null> {
+    async getTransactionByTxid(txid: string): Promise<TransactionData | null> {
         const txBuf = this.get(encodeTxKey(txid));
         if (!txBuf) return null;
 
         const tx = decodeTxValue(txBuf);
-        const outputs = this.getOutputsForTxid(txid, filterSpent);
+        const outputs = this.getOutputsForTxid(txid);
         if (outputs.length === 0) return null;
 
         return {
@@ -119,39 +116,36 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
 
     async getTransactionsByBlockHeight(
         height: number,
-        filterSpent: boolean,
     ): Promise<TransactionData[]> {
         const range = singleHeightRange(height);
         const txids = this.collectRange(
             range,
             (key) => decodeHeightIndexKey(key).txid,
         );
-        return this.fetchTransactions(txids, filterSpent);
+        return this.fetchTransactions(txids);
     }
 
     async getTransactionsByBlockHeightRange(
         startHeight: number,
         endHeight: number,
-        filterSpent: boolean,
     ): Promise<TransactionData[]> {
         const range = heightSpanRange(startHeight, endHeight);
         const txids = this.collectRange(
             range,
             (key) => decodeHeightIndexKey(key).txid,
         );
-        return this.fetchTransactions(txids, filterSpent);
+        return this.fetchTransactions(txids);
     }
 
     async getTransactionsByBlockHash(
         blockHash: string,
-        filterSpent: boolean,
     ): Promise<TransactionData[]> {
         const range = hashIndexRange(blockHash);
         const txids = this.collectRange(
             range,
             (key) => decodeHashIndexKey(key).txid,
         );
-        return this.fetchTransactions(txids, filterSpent);
+        return this.fetchTransactions(txids);
     }
 
     async getBlockHeightByTimestamp(timestamp: number): Promise<number | null> {
@@ -190,19 +184,8 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
 
     // --- Batch write operations ---
 
-    /**
-     * Saves a transaction and its outputs to the batch.
-     * Returns a map of output keys ("txid:vout") to output data,
-     * for use with markOutputsSpent's pendingOutputs parameter.
-     */
-    saveTransaction(
-        batch: BatchWriter,
-        tx: TransactionData,
-    ): Map<string, { pubKey: string; value: number }> {
-        const pendingOutputs = new Map<
-            string,
-            { pubKey: string; value: number }
-        >();
+    /** Saves a transaction and its outputs to the batch. */
+    saveTransaction(batch: BatchWriter, tx: TransactionData): void {
         // Primary transaction data
         batch.put(
             encodeTxKey(tx.id),
@@ -220,10 +203,6 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
                 encodeOutputKey(tx.id, out.vout),
                 encodeOutputValue(out.pubKey, out.value, out.isSpent),
             );
-            pendingOutputs.set(`${tx.id}:${out.vout}`, {
-                pubKey: out.pubKey,
-                value: out.value,
-            });
         }
 
         // Secondary indexes
@@ -233,65 +212,6 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
             encodeTimeIndexKey(tx.blockTime, tx.blockHeight),
             Buffer.alloc(0),
         );
-
-        return pendingOutputs;
-    }
-
-    /**
-     * Mark outputs as spent. Reads from committed DB state, with an optional
-     * pendingOutputs map for outputs that were just saved in the current batch
-     * (handles same-block spends where the output isn't committed yet).
-     *
-     * Probes are issued in sorted key order. `out:` keys are prefixed by raw
-     * txid, so spending order is effectively random across the B+tree; sorting
-     * keeps shared upper-level pages hot between probes.
-     *
-     * Returns probe counts for telemetry: `probes` is the number of committed
-     * -state lookups performed, `hits` how many of those found a record.
-     */
-    async markOutputsSpent(
-        batch: BatchWriter,
-        outpoints: [string, number][],
-        pendingOutputs?: Map<string, { pubKey: string; value: number }>,
-    ): Promise<{ probes: number; hits: number }> {
-        const toProbe: Buffer[] = [];
-
-        for (const [txid, vout] of outpoints) {
-            const key = encodeOutputKey(txid, vout);
-
-            // Check pending outputs first (same-block spend)
-            const pending = pendingOutputs?.get(`${txid}:${vout}`);
-            if (pending) {
-                batch.put(
-                    key,
-                    encodeOutputValue(pending.pubKey, pending.value, true),
-                );
-                continue;
-            }
-
-            toProbe.push(key);
-        }
-
-        toProbe.sort(Buffer.compare);
-
-        let hits = 0;
-        for (const key of toProbe) {
-            // Fall back to committed DB state
-            const existing = this.get(key);
-            if (!existing) continue; // output not in our index (not P2TR)
-            hits++;
-
-            const decoded = decodeOutputValue(existing);
-            if (decoded.isSpent) continue; // already spent
-
-            // Flip isSpent byte and write back
-            batch.put(
-                key,
-                encodeOutputValue(decoded.pubKey, decoded.value, true),
-            );
-        }
-
-        return { probes: toProbe.length, hits };
     }
 
     saveBlockState(batch: BatchWriter, state: BlockStateData): void {
@@ -352,15 +272,9 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
 
     // --- Private helpers ---
 
-    private getOutputsForTxid(
-        txid: string,
-        filterSpent: boolean,
-    ): OutputData[] {
-        // One ordered scan of `out:<txid>` covers both cases. The isSpent byte
-        // in the value is authoritative, so filtering in memory is strictly
-        // cheaper than consulting a separate index and re-reading each record.
+    private getOutputsForTxid(txid: string): OutputData[] {
         const range = outputPrefixRange(txid);
-        const outputs = this.collectRange(range, (key, value) => {
+        return this.collectRange(range, (key, value) => {
             const { vout } = decodeOutputKey(key);
             const decoded = decodeOutputValue(value);
             return {
@@ -369,17 +283,14 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
                 ...decoded,
             };
         });
-
-        return filterSpent ? outputs.filter((o) => !o.isSpent) : outputs;
     }
 
     private async fetchTransactions(
         txids: string[],
-        filterSpent: boolean,
     ): Promise<TransactionData[]> {
         const transactions: TransactionData[] = [];
         for (const txid of txids) {
-            const tx = await this.getTransactionByTxid(txid, filterSpent);
+            const tx = await this.getTransactionByTxid(txid);
             if (tx) transactions.push(tx);
         }
         return transactions;

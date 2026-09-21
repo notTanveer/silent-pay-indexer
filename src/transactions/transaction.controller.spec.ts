@@ -109,7 +109,6 @@ describe('TransactionController', () => {
 
         expect(getTransactionByBlockHeightSpy).toHaveBeenCalledWith(
             blockHeight,
-            false,
         );
         expect(controllerResult).toEqual({ transactions: mockTransactions });
     });
@@ -127,10 +126,7 @@ describe('TransactionController', () => {
             blockHash,
         );
 
-        expect(getTransactionByBlockHashSpy).toHaveBeenCalledWith(
-            blockHash,
-            false,
-        );
+        expect(getTransactionByBlockHashSpy).toHaveBeenCalledWith(blockHash);
         expect(controllerResult).toEqual({
             transactions: mockTransactions,
         });
@@ -154,7 +150,6 @@ describe('TransactionController', () => {
         expect(getTransactionsByBlockHeightRangeSpy).toHaveBeenCalledWith(
             startHeight,
             endHeight,
-            false,
         );
         expect(controllerResult).toEqual({
             transactions: mockTransactions,
@@ -169,7 +164,7 @@ describe('TransactionController', () => {
         const txid = '1';
         const controllerResult = await controller.getTransactionByTxid(txid);
 
-        expect(getTransactionByTxidSpy).toHaveBeenCalledWith(txid, false);
+        expect(getTransactionByTxidSpy).toHaveBeenCalledWith(txid);
         expect(controllerResult).toEqual({ transaction: mockTransactions[0] });
     });
 });

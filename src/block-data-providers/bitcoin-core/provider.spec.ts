@@ -68,7 +68,6 @@ describe('Bitcoin Core Provider', () => {
                     provide: StorageService,
                     useValue: {
                         createBatch: jest.fn(),
-                        markOutputsSpent: jest.fn(),
                         saveTransaction: jest.fn(),
                         saveBlockState: jest.fn(),
                         saveOperationState: jest.fn(),

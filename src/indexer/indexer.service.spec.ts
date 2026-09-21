@@ -63,7 +63,6 @@ describe('IndexerService', () => {
 
             const transactionEntity = await storageService.getTransactionByTxid(
                 transaction.txid,
-                false,
             );
 
             if (transaction.scanTweak) {

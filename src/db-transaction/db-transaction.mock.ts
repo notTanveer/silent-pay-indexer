@@ -16,7 +16,6 @@ export const mockStorageService = {
     getCurrentBlockState: jest.fn(),
     getOperationState: jest.fn(),
     saveTransaction: jest.fn(),
-    markOutputsSpent: jest.fn(),
     saveBlockState: jest.fn(),
     saveOperationState: jest.fn(),
     deleteTransactionsByBlockHash: jest.fn(),

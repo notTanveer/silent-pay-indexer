@@ -5,7 +5,6 @@ import {
     Get,
     NotFoundException,
     Param,
-    ParseBoolPipe,
     ParseIntPipe,
     Query,
     UseInterceptors,
@@ -20,14 +19,11 @@ export class TransactionController {
     @Get('height/:height')
     @UseInterceptors(CacheInterceptor)
     async getTransactionByBlockHeight(
-        @Param('height') blockHeight: number,
-        @Query('filterSpent', new ParseBoolPipe({ optional: true }))
-        filterSpent = false,
+        @Param('height', ParseIntPipe) blockHeight: number,
     ) {
         const transactions =
             await this.transactionsService.getTransactionByBlockHeight(
                 blockHeight,
-                filterSpent,
             );
 
         return { transactions: transactions };
@@ -38,8 +34,6 @@ export class TransactionController {
     async getTransactionsByBlockHeightRange(
         @Query('startHeight', ParseIntPipe) startHeight: number,
         @Query('endHeight', ParseIntPipe) endHeight: number,
-        @Query('filterSpent', new ParseBoolPipe({ optional: true }))
-        filterSpent = false,
     ) {
         if (startHeight < 0 || endHeight < 0) {
             throw new BadRequestException('Block heights must be non-negative');
@@ -61,7 +55,6 @@ export class TransactionController {
             await this.transactionsService.getTransactionsByBlockHeightRange(
                 startHeight,
                 endHeight,
-                filterSpent,
             );
 
         return { transactions: transactions };
@@ -69,16 +62,9 @@ export class TransactionController {
 
     @Get('hash/:hash')
     @UseInterceptors(CacheInterceptor)
-    async getTransactionByBlockHash(
-        @Param('hash') blockHash: string,
-        @Query('filterSpent', new ParseBoolPipe({ optional: true }))
-        filterSpent = false,
-    ) {
+    async getTransactionByBlockHash(@Param('hash') blockHash: string) {
         const transactions =
-            await this.transactionsService.getTransactionByBlockHash(
-                blockHash,
-                filterSpent,
-            );
+            await this.transactionsService.getTransactionByBlockHash(blockHash);
 
         return { transactions: transactions };
     }
@@ -95,14 +81,9 @@ export class TransactionController {
 
     @Get('txid/:txid')
     @UseInterceptors(CacheInterceptor)
-    async getTransactionByTxid(
-        @Param('txid') txid: string,
-        @Query('filterSpent', new ParseBoolPipe({ optional: true }))
-        filterSpent = false,
-    ) {
+    async getTransactionByTxid(@Param('txid') txid: string) {
         const transaction = await this.transactionsService.getTransactionByTxid(
             txid,
-            filterSpent,
         );
         if (!transaction) {
             throw new NotFoundException(

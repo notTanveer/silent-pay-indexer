@@ -74,7 +74,6 @@ describe('SilentBlocksService', () => {
 
             const encodedBlock = await service.getSilentBlockByHeight(
                 blockHeight,
-                false,
             );
 
             expect(encodedBlock.toString('hex')).toEqual(encodedBlockHex);
@@ -96,59 +95,11 @@ describe('SilentBlocksService', () => {
             }
             await batch.commit();
 
-            const encodedBlock = await service.getSilentBlockByHash(
-                blockHash,
-                false,
-            );
+            const encodedBlock = await service.getSilentBlockByHash(blockHash);
 
             expect(encodedBlock.toString('hex')).toEqual(encodedBlockHex);
         },
     );
-
-    it('should omit spent Outputs if filterSpent is set to true', async () => {
-        const fixture = silentBlockEncodingFixture[0];
-
-        // Save initial transactions
-        const batch = storageService.createBatch();
-        for (const tx of fixture.transactions) {
-            storageService.saveTransaction(batch, {
-                ...tx,
-                outputs: tx.outputs.map((o) => ({
-                    ...o,
-                    transactionId: tx.id,
-                })),
-            });
-        }
-        await batch.commit();
-
-        // Fetch and verify filtered outputs
-        let encodedBlock = await service.getSilentBlockByHash(
-            fixture.blockHash,
-            true,
-        );
-
-        expect(encodedBlock.toString('hex')).toEqual(
-            fixture.filteredOutputEncodedBlockHex,
-        );
-
-        // Mark all outputs as spent
-        const spentBatch = storageService.createBatch();
-        const allOutpoints: [string, number][] = [];
-        for (const tx of fixture.transactions) {
-            for (const out of tx.outputs) {
-                allOutpoints.push([tx.id, out.vout]);
-            }
-        }
-        await storageService.markOutputsSpent(spentBatch, allOutpoints);
-        await spentBatch.commit();
-
-        encodedBlock = await service.getSilentBlockByHash(
-            fixture.blockHash,
-            true,
-        );
-
-        expect(encodedBlock.toString('hex')).toEqual('0000');
-    });
 
     afterEach(async () => {
         await storageService.onModuleDestroy();

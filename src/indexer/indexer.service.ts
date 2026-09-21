@@ -40,31 +40,30 @@ export class IndexerService {
         blockHash: string,
         blockTime: number,
         batch: BatchWriter,
-    ): Promise<Map<string, { pubKey: string; value: number }>> {
+    ): Promise<void> {
         const scanResult = this.deriveOutputsAndComputeScanTweak(vin, vout);
-        if (scanResult !== null) {
-            const { scanTweak, eligibleOutputs } = scanResult;
+        if (scanResult === null) return;
 
-            const outputs: OutputData[] = eligibleOutputs.map((out) => ({
-                transactionId: txid,
-                vout: out.vout,
-                pubKey: out.pubKey,
-                value: out.value,
-                isSpent: false,
-            }));
+        const { scanTweak, eligibleOutputs } = scanResult;
 
-            const transaction: TransactionData = {
-                id: txid,
-                blockHeight,
-                blockHash,
-                blockTime,
-                scanTweak: scanTweak.toString('hex'),
-                outputs,
-            };
+        const outputs: OutputData[] = eligibleOutputs.map((out) => ({
+            transactionId: txid,
+            vout: out.vout,
+            pubKey: out.pubKey,
+            value: out.value,
+            isSpent: false,
+        }));
 
-            return this.storageService.saveTransaction(batch, transaction);
-        }
-        return new Map();
+        const transaction: TransactionData = {
+            id: txid,
+            blockHeight,
+            blockHash,
+            blockTime,
+            scanTweak: scanTweak.toString('hex'),
+            outputs,
+        };
+
+        this.storageService.saveTransaction(batch, transaction);
     }
 
     public deriveOutputsAndComputeScanTweak(
