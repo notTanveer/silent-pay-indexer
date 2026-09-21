@@ -99,21 +99,6 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
 
     // --- Transaction reads ---
 
-    async getTransactionByTxid(txid: string): Promise<TransactionData | null> {
-        const txBuf = this.get(encodeTxKey(txid));
-        if (!txBuf) return null;
-
-        const tx = decodeTxValue(txBuf);
-        const outputs = this.getOutputsForTxid(txid);
-        if (outputs.length === 0) return null;
-
-        return {
-            id: txid,
-            ...tx,
-            outputs,
-        };
-    }
-
     async getTransactionsByBlockHeight(
         height: number,
     ): Promise<TransactionData[]> {
@@ -272,6 +257,25 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
 
     // --- Private helpers ---
 
+    /**
+     * Reads a transaction by txid. Private because a txid alone is not a
+     * usable entry point: callers reach a transaction through a block, and
+     * `GET transactions/txid/:txid` derives its answer from the node instead.
+     */
+    private readTransaction(txid: string): TransactionData | null {
+        const txBuf = this.get(encodeTxKey(txid));
+        if (!txBuf) return null;
+
+        const outputs = this.getOutputsForTxid(txid);
+        if (outputs.length === 0) return null;
+
+        return {
+            id: txid,
+            ...decodeTxValue(txBuf),
+            outputs,
+        };
+    }
+
     private getOutputsForTxid(txid: string): OutputData[] {
         const range = outputPrefixRange(txid);
         return this.collectRange(range, (key, value) => {
@@ -290,7 +294,7 @@ export class StorageService implements OnModuleInit, OnModuleDestroy {
     ): Promise<TransactionData[]> {
         const transactions: TransactionData[] = [];
         for (const txid of txids) {
-            const tx = await this.getTransactionByTxid(txid);
+            const tx = this.readTransaction(txid);
             if (tx) transactions.push(tx);
         }
         return transactions;

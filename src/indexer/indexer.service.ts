@@ -41,8 +41,38 @@ export class IndexerService {
         blockTime: number,
         batch: BatchWriter,
     ): Promise<void> {
+        const transaction = this.buildTransactionData(
+            txid,
+            vin,
+            vout,
+            blockHeight,
+            blockHash,
+            blockTime,
+        );
+        if (transaction === null) return;
+
+        this.storageService.saveTransaction(batch, transaction);
+    }
+
+    /**
+     * Derives the stored record for a transaction, or null if it is not an
+     * eligible silent-payment transaction.
+     *
+     * Shared by the block-indexing path and the live txid lookup so that a
+     * record derived on demand is bit-identical to the one that was stored:
+     * the scan tweak is a pure function of the transaction and its prevouts,
+     * but only if both callers compute it the same way.
+     */
+    public buildTransactionData(
+        txid: string,
+        vin: TransactionInput[],
+        vout: TransactionOutput[],
+        blockHeight: number,
+        blockHash: string,
+        blockTime: number,
+    ): TransactionData | null {
         const scanResult = this.deriveOutputsAndComputeScanTweak(vin, vout);
-        if (scanResult === null) return;
+        if (scanResult === null) return null;
 
         const { scanTweak, eligibleOutputs } = scanResult;
 
@@ -54,7 +84,7 @@ export class IndexerService {
             isSpent: false,
         }));
 
-        const transaction: TransactionData = {
+        return {
             id: txid,
             blockHeight,
             blockHash,
@@ -62,8 +92,6 @@ export class IndexerService {
             scanTweak: scanTweak.toString('hex'),
             outputs,
         };
-
-        this.storageService.saveTransaction(batch, transaction);
     }
 
     public deriveOutputsAndComputeScanTweak(

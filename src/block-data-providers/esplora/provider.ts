@@ -1,5 +1,13 @@
-import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
-import { BaseBlockDataProvider } from '@/block-data-providers/base-block-data-provider.abstract';
+import {
+    Injectable,
+    Logger,
+    NotImplementedException,
+    OnApplicationBootstrap,
+} from '@nestjs/common';
+import {
+    BaseBlockDataProvider,
+    ProviderTransaction,
+} from '@/block-data-providers/base-block-data-provider.abstract';
 import { AxiosRetryConfig, makeRequest } from '@/common/request';
 import { ConfigService } from '@nestjs/config';
 import { IndexerService, TransactionInput } from '@/indexer/indexer.service';
@@ -251,6 +259,18 @@ export class EsploraProvider
             },
             this.retryConfig,
             this.logger,
+        );
+    }
+
+    /**
+     * Esplora returns prevouts and the block height from a single GET /tx, so
+     * this is implementable here — it is simply not implemented, to avoid a
+     * second derivation path that no CI job exercises. Every other route works
+     * against Esplora unchanged.
+     */
+    protected async fetchTransactionForTweak(): Promise<ProviderTransaction | null> {
+        throw new NotImplementedException(
+            'Lookup by txid requires the Bitcoin Core provider',
         );
     }
 

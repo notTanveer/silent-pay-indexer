@@ -41,6 +41,13 @@ describe('StorageService', () => {
         await batch.commit();
     };
 
+    // Transactions are only reachable through a block, so every read-back goes
+    // via the height index rather than a txid lookup.
+    const findTx = async (height: number, id: string) =>
+        (await storage.getTransactionsByBlockHeight(height)).find(
+            (t) => t.id === id,
+        ) ?? null;
+
     beforeEach(async () => {
         tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'storage-test-'));
 
@@ -67,7 +74,7 @@ describe('StorageService', () => {
     });
 
     describe('transaction reads', () => {
-        it('round-trips a transaction and its outputs by txid', async () => {
+        it('round-trips a transaction and its outputs', async () => {
             await save(
                 makeTx(txid(1), [
                     { vout: 0, value: 500 },
@@ -75,7 +82,7 @@ describe('StorageService', () => {
                 ]),
             );
 
-            const tx = await storage.getTransactionByTxid(txid(1));
+            const tx = await findTx(100, txid(1));
             expect(tx.id).toBe(txid(1));
             expect(tx.blockHeight).toBe(100);
             expect(tx.blockHash).toBe(hash(999));
@@ -86,8 +93,8 @@ describe('StorageService', () => {
             ]);
         });
 
-        it('returns null for an unknown txid', async () => {
-            expect(await storage.getTransactionByTxid(txid(42))).toBeNull();
+        it('returns nothing for an unknown txid', async () => {
+            expect(await findTx(100, txid(42))).toBeNull();
         });
 
         it('returns every transaction at a height, txid-ascending', async () => {
@@ -232,8 +239,8 @@ describe('StorageService', () => {
             await storage.deleteTransactionsByBlockHash(batch, hash(1));
             await batch.commit();
 
-            expect(await storage.getTransactionByTxid(txid(1))).toBeNull();
-            expect(await storage.getTransactionByTxid(txid(2))).toBeNull();
+            expect(await findTx(10, txid(1))).toBeNull();
+            expect(await findTx(10, txid(2))).toBeNull();
             expect(await storage.getTransactionsByBlockHeight(10)).toEqual([]);
             expect(await storage.getTransactionsByBlockHash(hash(1))).toEqual(
                 [],
@@ -254,7 +261,7 @@ describe('StorageService', () => {
             await storage.deleteTransactionsByBlockHash(batch, hash(5));
             await batch.commit();
 
-            expect(await storage.getTransactionByTxid(txid(1))).not.toBeNull();
+            expect(await findTx(10, txid(1))).not.toBeNull();
         });
     });
 
@@ -266,7 +273,7 @@ describe('StorageService', () => {
                 makeTx(txid(1), [{ vout: 0, value: 1 }]),
             );
 
-            expect(await storage.getTransactionByTxid(txid(1))).toBeNull();
+            expect(await findTx(100, txid(1))).toBeNull();
         });
     });
 });

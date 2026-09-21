@@ -61,9 +61,12 @@ describe('IndexerService', () => {
                 );
             });
 
-            const transactionEntity = await storageService.getTransactionByTxid(
-                transaction.txid,
+            // The fixture indexes everything at height 0.
+            const indexed = await storageService.getTransactionsByBlockHeight(
+                0,
             );
+            const transactionEntity =
+                indexed.find((tx) => tx.id === transaction.txid) ?? null;
 
             if (transaction.scanTweak) {
                 expect(transactionEntity.scanTweak).toBe(transaction.scanTweak);

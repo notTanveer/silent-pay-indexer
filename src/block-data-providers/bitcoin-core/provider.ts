@@ -4,6 +4,7 @@ import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { BitcoinNetwork } from '@/common/enum';
 import {
     BITCOIN_CORE_FULL_VERBOSITY_VERSION,
+    BITCOIN_CORE_PREVOUT_RAWTX_VERSION,
     BIP352_ACTIVATION_HEIGHT,
     DEFAULT_COMMIT_BATCH_BLOCKS,
 } from '@/common/constants';
@@ -14,10 +15,14 @@ import {
     TransactionOutput,
 } from '@/indexer/indexer.service';
 import { OperationStateService } from '@/operation-state/operation-state.service';
-import { BaseBlockDataProvider } from '@/block-data-providers/base-block-data-provider.abstract';
+import {
+    BaseBlockDataProvider,
+    ProviderTransaction,
+} from '@/block-data-providers/base-block-data-provider.abstract';
 import {
     Block,
     BitcoinCoreOperationState,
+    BlockHeader,
     BlockTransaction,
     Transaction,
     Output,
@@ -35,6 +40,18 @@ import { btcToSats } from '@/common/common';
 import { StorageService } from '@/storage/storage.service';
 import { BlockTimer } from '@/common/telemetry';
 
+/** RPC_INVALID_ADDRESS_OR_KEY: the txid is in neither the mempool nor a block. */
+const RPC_INVALID_ADDRESS_OR_KEY = -5;
+
+function isUnknownTransactionError(error: unknown): boolean {
+    const rpcError = (
+        error as {
+            response?: { data?: { error?: { code?: number } } };
+        }
+    )?.response?.data?.error;
+    return rpcError?.code === RPC_INVALID_ADDRESS_OR_KEY;
+}
+
 @Injectable()
 export class BitcoinCoreProvider
     extends BaseBlockDataProvider<BitcoinCoreOperationState>
@@ -44,6 +61,7 @@ export class BitcoinCoreProvider
     protected readonly operationStateKey = 'bitcoincore-operation-state';
     private readonly rpcUrl: string;
     private isSyncing = false;
+    private nodeVersion: number | null = null;
     private retryConfig: AxiosRetryConfig;
     private readonly commitBatchBlocks: number;
 
@@ -134,8 +152,9 @@ export class BitcoinCoreProvider
                 return;
             }
 
-            const networkInfo = await this.getNetworkInfo();
-            const verbosityLevel = this.versionToVerbosity(networkInfo.version);
+            const verbosityLevel = this.versionToVerbosity(
+                await this.getNodeVersion(),
+            );
 
             let height =
                 ((await this.traceReorg()) ?? state.indexedBlockHeight) + 1;
@@ -236,6 +255,17 @@ export class BitcoinCoreProvider
         });
     }
 
+    /**
+     * The node cannot change version without a restart, so this is resolved
+     * once rather than on every sync tick and every txid lookup.
+     */
+    private async getNodeVersion(): Promise<number> {
+        if (this.nodeVersion === null) {
+            this.nodeVersion = (await this.getNetworkInfo()).version;
+        }
+        return this.nodeVersion;
+    }
+
     private async getTipHeight(): Promise<number> {
         return this.request({
             method: 'getblockcount',
@@ -259,12 +289,64 @@ export class BitcoinCoreProvider
 
     private async getRawTransaction(
         txid: string,
-        isVerbose: boolean,
+        verbosity: boolean | number,
     ): Promise<BlockTransaction> {
         return this.request({
             method: 'getrawtransaction',
-            params: [txid, isVerbose],
+            params: [txid, verbosity],
         });
+    }
+
+    private async getBlockHeader(hash: string): Promise<BlockHeader> {
+        return this.request({
+            method: 'getblockheader',
+            params: [hash],
+        });
+    }
+
+    protected async fetchTransactionForTweak(
+        txid: string,
+    ): Promise<ProviderTransaction | null> {
+        const version = await this.getNodeVersion();
+        // Verbosity 2 embeds `vin[].prevout` in one call. Below Core 25 it is
+        // not accepted, so ask for the plain verbose form and let
+        // parseTransactionInput resolve each prevout itself.
+        let tx: BlockTransaction;
+        try {
+            tx = await this.getRawTransaction(
+                txid,
+                version >= BITCOIN_CORE_PREVOUT_RAWTX_VERSION ? 2 : true,
+            );
+        } catch (error) {
+            // Core answers an unknown txid with an HTTP 500 carrying
+            // RPC_INVALID_ADDRESS_OR_KEY, which makeRequest rethrows as-is.
+            // Left unhandled it would surface as a 500 from a route whose
+            // caller means to return 404.
+            if (isUnknownTransactionError(error)) return null;
+            throw error;
+        }
+
+        // Prevouts come from block undo data, so an unconfirmed transaction
+        // cannot be tweaked.
+        if (!tx?.blockhash) return null;
+
+        // A coinbase has no prevout to derive an input pubkey from; the block
+        // indexer skips it for the same reason (processBlock starts at i = 1).
+        if (tx.vin.some((input) => input.coinbase !== undefined)) return null;
+
+        // Height is absent from the getrawtransaction payload at every
+        // verbosity. Deriving it from `confirmations` would race the tip.
+        const header = await this.getBlockHeader(tx.blockhash);
+
+        return {
+            vin: await Promise.all(
+                tx.vin.map(this.parseTransactionInput, this),
+            ),
+            vout: tx.vout.map(this.parseTransactionOutput, this),
+            blockHeight: header.height,
+            blockHash: tx.blockhash,
+            blockTime: header.time,
+        };
     }
 
     public async processBlock(

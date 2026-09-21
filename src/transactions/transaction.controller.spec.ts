@@ -68,10 +68,14 @@ const mockStorageService = {
         .fn()
         .mockResolvedValue(mockTransactions),
     getTransactionsByBlockHash: jest.fn().mockResolvedValue(mockTransactions),
-    getTransactionByTxid: jest.fn().mockResolvedValue(mockTransactions[0]),
     getBlockHeightByTimestamp: jest.fn(),
     createBatch: jest.fn(),
     deleteTransactionsByBlockHash: jest.fn(),
+};
+
+// Lookup by txid is derived from the chain, not read from storage.
+const mockBlockDataProvider = {
+    getTransactionForTweak: jest.fn().mockResolvedValue(mockTransactions[0]),
 };
 
 describe('TransactionController', () => {
@@ -87,6 +91,10 @@ describe('TransactionController', () => {
                 {
                     provide: StorageService,
                     useValue: mockStorageService,
+                },
+                {
+                    provide: 'BlockDataProvider',
+                    useValue: mockBlockDataProvider,
                 },
             ],
         }).compile();
@@ -165,6 +173,9 @@ describe('TransactionController', () => {
         const controllerResult = await controller.getTransactionByTxid(txid);
 
         expect(getTransactionByTxidSpy).toHaveBeenCalledWith(txid);
+        expect(
+            mockBlockDataProvider.getTransactionForTweak,
+        ).toHaveBeenCalledWith(txid);
         expect(controllerResult).toEqual({ transaction: mockTransactions[0] });
     });
 });

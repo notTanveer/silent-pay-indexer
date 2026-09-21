@@ -1,10 +1,15 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { StorageService } from '@/storage/storage.service';
 import { TransactionData } from '@/storage/interfaces';
+import { BaseBlockDataProvider } from '@/block-data-providers/base-block-data-provider.abstract';
 
 @Injectable()
 export class TransactionsService {
-    constructor(private readonly storageService: StorageService) {}
+    constructor(
+        private readonly storageService: StorageService,
+        @Inject('BlockDataProvider')
+        private readonly blockDataProvider: BaseBlockDataProvider<unknown>,
+    ) {}
 
     async getTransactionByBlockHeight(
         blockHeight: number,
@@ -28,8 +33,14 @@ export class TransactionsService {
         return this.storageService.getTransactionsByBlockHash(blockHash);
     }
 
+    /**
+     * Derived live from the chain rather than read from storage: `tx:` records
+     * are reachable only through a block height, and a txid does not carry
+     * one. Recomputing is exact, since the scan tweak is a pure function of
+     * the transaction and its prevouts.
+     */
     async getTransactionByTxid(txid: string): Promise<TransactionData | null> {
-        return this.storageService.getTransactionByTxid(txid);
+        return this.blockDataProvider.getTransactionForTweak(txid);
     }
 
     async deleteTransactionByBlockHash(blockHash: string): Promise<void> {

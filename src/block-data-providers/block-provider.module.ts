@@ -72,6 +72,6 @@ import { StorageService } from '@/storage/storage.service';
             },
         },
     ],
-    exports: [],
+    exports: ['BlockDataProvider'],
 })
 export class BlockProviderModule {}

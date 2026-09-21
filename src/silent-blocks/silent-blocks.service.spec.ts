@@ -35,6 +35,10 @@ describe('SilentBlocksService', () => {
                     },
                 },
                 {
+                    provide: 'BlockDataProvider',
+                    useValue: { getTransactionForTweak: jest.fn() },
+                },
+                {
                     provide: SilentBlocksGateway,
                     useValue: jest.fn(),
                 },

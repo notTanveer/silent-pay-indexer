@@ -1,4 +1,5 @@
-import { CacheInterceptor } from '@nestjs/cache-manager';
+import { CacheInterceptor, CacheTTL } from '@nestjs/cache-manager';
+import { Throttle } from '@nestjs/throttler';
 import {
     BadRequestException,
     Controller,
@@ -10,7 +11,12 @@ import {
     UseInterceptors,
 } from '@nestjs/common';
 import { TransactionsService } from '@/transactions/transactions.service';
-import { MAX_BLOCK_RANGE } from '@/common/constants';
+import {
+    MAX_BLOCK_RANGE,
+    TXID_CACHE_TTL_MS,
+    TXID_THROTTLE_LIMIT,
+    TXID_THROTTLE_TTL_MS,
+} from '@/common/constants';
 
 @Controller('transactions')
 export class TransactionController {
@@ -81,6 +87,10 @@ export class TransactionController {
 
     @Get('txid/:txid')
     @UseInterceptors(CacheInterceptor)
+    @CacheTTL(TXID_CACHE_TTL_MS)
+    @Throttle({
+        default: { ttl: TXID_THROTTLE_TTL_MS, limit: TXID_THROTTLE_LIMIT },
+    })
     async getTransactionByTxid(@Param('txid') txid: string) {
         const transaction = await this.transactionsService.getTransactionByTxid(
             txid,

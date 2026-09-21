@@ -10,6 +10,18 @@ import { ConfigService } from '@nestjs/config';
 import { BlockStateService } from '@/block-state/block-state.service';
 import { BatchWriter } from '@/storage/batch-writer';
 import { StorageService } from '@/storage/storage.service';
+import { TransactionData } from '@/storage/interfaces';
+import { BitcoinNetwork } from '@/common/enum';
+import { BIP352_ACTIVATION_HEIGHT } from '@/common/constants';
+
+/** A confirmed transaction in the shape the scan-tweak derivation needs. */
+export type ProviderTransaction = {
+    vin: TransactionInput[];
+    vout: TransactionOutput[];
+    blockHeight: number;
+    blockHash: string;
+    blockTime: number;
+};
 
 export abstract class BaseBlockDataProvider<OperationState> {
     protected readonly eventEmitter: EventEmitter2 = new EventEmitter2();
@@ -18,7 +30,7 @@ export abstract class BaseBlockDataProvider<OperationState> {
 
     protected constructor(
         protected readonly configService: ConfigService,
-        private readonly indexerService: IndexerService,
+        protected readonly indexerService: IndexerService,
         private readonly operationStateService: OperationStateService,
         protected readonly blockStateService: BlockStateService,
         protected readonly storageService: StorageService,
@@ -66,6 +78,47 @@ export abstract class BaseBlockDataProvider<OperationState> {
     }
 
     abstract getBlockHash(height: number): Promise<string>;
+
+    /**
+     * Fetches a confirmed transaction together with its prevout scripts, or
+     * null if it cannot be tweaked (unconfirmed, or a coinbase).
+     */
+    protected abstract fetchTransactionForTweak(
+        txid: string,
+    ): Promise<ProviderTransaction | null>;
+
+    /**
+     * Derives a transaction's record live from the chain instead of reading it
+     * out of the index.
+     *
+     * The scan tweak is deterministic from the transaction plus its prevouts,
+     * so this is bit-identical to what indexing stored, not an approximation.
+     * Unlike the rest of the API it can answer for blocks above the indexed
+     * tip, since it never consults the index.
+     */
+    async getTransactionForTweak(
+        txid: string,
+    ): Promise<TransactionData | null> {
+        const tx = await this.fetchTransactionForTweak(txid);
+        if (!tx) return null;
+
+        // The index would never hold a pre-activation transaction, so neither
+        // does this. Only mainnet has an activation height; every other
+        // network is indexed from genesis.
+        const isMainnet =
+            this.configService.get<BitcoinNetwork>('app.network') ===
+            BitcoinNetwork.MAINNET;
+        if (isMainnet && tx.blockHeight < BIP352_ACTIVATION_HEIGHT) return null;
+
+        return this.indexerService.buildTransactionData(
+            txid,
+            tx.vin,
+            tx.vout,
+            tx.blockHeight,
+            tx.blockHash,
+            tx.blockTime,
+        );
+    }
 
     async traceReorg(): Promise<number> {
         let state = await this.blockStateService.getCurrentBlockState();

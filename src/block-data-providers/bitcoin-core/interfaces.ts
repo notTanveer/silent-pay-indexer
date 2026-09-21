@@ -12,6 +12,17 @@ export interface BlockTransaction {
     hash: string;
     vin: Input[];
     vout: Output[];
+    /**
+     * Only present when the transaction is confirmed, and only on the
+     * standalone `getrawtransaction` payload — a transaction read out of
+     * `getblock` does not repeat it.
+     */
+    blockhash?: string;
+}
+
+export interface BlockHeader {
+    height: number;
+    time: number;
 }
 
 export interface NetworkInfo {
@@ -24,6 +35,8 @@ export interface Input {
     scriptSig: {
         hex: string;
     };
+    /** Present only on a coinbase input, which has no prevout to spend. */
+    coinbase?: string;
     prevout?: {
         scriptPubKey: {
             hex: string;
