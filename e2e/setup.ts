@@ -3,7 +3,7 @@ import { AppModule } from '@/app.module';
 import * as Docker from 'dockerode';
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
-import { readFileSync } from 'fs';
+import { readFileSync, rmSync } from 'fs';
 import * as yaml from 'js-yaml';
 import { BitcoinRPCUtil } from '@e2e/helpers/rpc.helper';
 import { FileLogger } from '@e2e/file-logger';
@@ -110,6 +110,14 @@ async function setupTestApp(): Promise<INestApplication> {
 }
 
 export async function initialiseDep() {
+    // Nothing cleans this up between runs, and a stale partition tree from a
+    // run that reached different heights makes boundary behaviour
+    // non-deterministic.
+    const config = yaml.load(
+        readFileSync('./config/e2e.config.yaml', 'utf8'),
+    ) as Record<string, any>;
+    rmSync(config.db.path, { recursive: true, force: true });
+
     const bitcoind = await startBitcoinD();
     const app = await setupTestApp();
 

@@ -17,9 +17,12 @@ export class DbTransactionService {
             await batch.commit();
             onCommit?.(Number(process.hrtime.bigint() - startedAt) / 1e6);
             return result;
-        } catch (err) {
-            // Batch is discarded (not committed) — equivalent to rollback
-            throw err;
+        } finally {
+            // Releases any environment the batch still holds. commit() disposes
+            // on its own way out and dispose() is idempotent, so this only bites
+            // when the callback threw — which is the case that used to leak,
+            // since a failed RPC aborts the batch without committing it.
+            batch.dispose();
         }
     }
 }

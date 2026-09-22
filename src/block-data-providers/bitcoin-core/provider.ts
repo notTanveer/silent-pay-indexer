@@ -4,6 +4,7 @@ import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { BitcoinNetwork } from '@/common/enum';
 import {
     BITCOIN_CORE_FULL_VERBOSITY_VERSION,
+    BITCOIN_CORE_PREVOUT_RAWTX_VERSION,
     BIP352_ACTIVATION_HEIGHT,
     DEFAULT_COMMIT_BATCH_BLOCKS,
 } from '@/common/constants';
@@ -14,10 +15,14 @@ import {
     TransactionOutput,
 } from '@/indexer/indexer.service';
 import { OperationStateService } from '@/operation-state/operation-state.service';
-import { BaseBlockDataProvider } from '@/block-data-providers/base-block-data-provider.abstract';
+import {
+    BaseBlockDataProvider,
+    ProviderTransaction,
+} from '@/block-data-providers/base-block-data-provider.abstract';
 import {
     Block,
     BitcoinCoreOperationState,
+    BlockHeader,
     BlockTransaction,
     Transaction,
     Output,
@@ -31,9 +36,22 @@ import { BlockStateService } from '@/block-state/block-state.service';
 import { DbTransactionService } from '@/db-transaction/db-transaction.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { INDEXED_BLOCK_EVENT } from '@/common/events';
-import { btcToSats, isP2TR } from '@/common/common';
+import { btcToSats } from '@/common/common';
 import { StorageService } from '@/storage/storage.service';
+import { PartitionManager } from '@/storage/partition-manager';
 import { BlockTimer } from '@/common/telemetry';
+
+/** RPC_INVALID_ADDRESS_OR_KEY: the txid is in neither the mempool nor a block. */
+const RPC_INVALID_ADDRESS_OR_KEY = -5;
+
+function isUnknownTransactionError(error: unknown): boolean {
+    const rpcError = (
+        error as {
+            response?: { data?: { error?: { code?: number } } };
+        }
+    )?.response?.data?.error;
+    return rpcError?.code === RPC_INVALID_ADDRESS_OR_KEY;
+}
 
 @Injectable()
 export class BitcoinCoreProvider
@@ -44,6 +62,7 @@ export class BitcoinCoreProvider
     protected readonly operationStateKey = 'bitcoincore-operation-state';
     private readonly rpcUrl: string;
     private isSyncing = false;
+    private nodeVersion: number | null = null;
     private retryConfig: AxiosRetryConfig;
     private readonly commitBatchBlocks: number;
 
@@ -55,6 +74,7 @@ export class BitcoinCoreProvider
         private readonly dbTransactionService: DbTransactionService,
         protected readonly eventEmitter: EventEmitter2,
         storageService: StorageService,
+        private readonly partitionManager: PartitionManager,
     ) {
         super(
             configService,
@@ -79,35 +99,35 @@ export class BitcoinCoreProvider
 
     async onApplicationBootstrap() {
         const currentState = await this.getState();
+        let indexedBlockHeight: number;
+
         if (currentState) {
             this.logger.log(
                 `Restoring state from previous run: ${JSON.stringify(
                     currentState,
                 )}`,
             );
+            indexedBlockHeight = currentState.indexedBlockHeight;
         } else {
             this.logger.log('No previous state found. Starting from scratch.');
 
-            const blockHeight =
+            indexedBlockHeight =
                 this.configService.get<BitcoinNetwork>('app.network') ===
                 BitcoinNetwork.MAINNET
                     ? BIP352_ACTIVATION_HEIGHT - 1
                     : 0;
-            const blockHash = await this.getBlockHash(blockHeight);
+            const blockHash = await this.getBlockHash(indexedBlockHeight);
 
             await this.dbTransactionService.execute(async (batch) => {
                 await this.setState(
-                    {
-                        indexedBlockHeight: blockHeight,
-                    },
-                    {
-                        blockHash,
-                        blockHeight,
-                    },
+                    { indexedBlockHeight },
+                    { blockHash, blockHeight: indexedBlockHeight },
                     batch,
                 );
             });
         }
+
+        await this.purgeAboveIndexedTip(indexedBlockHeight);
     }
 
     @Cron(CronExpression.EVERY_10_SECONDS)
@@ -134,8 +154,9 @@ export class BitcoinCoreProvider
                 return;
             }
 
-            const networkInfo = await this.getNetworkInfo();
-            const verbosityLevel = this.versionToVerbosity(networkInfo.version);
+            const verbosityLevel = this.versionToVerbosity(
+                await this.getNodeVersion(),
+            );
 
             let height =
                 ((await this.traceReorg()) ?? state.indexedBlockHeight) + 1;
@@ -144,8 +165,12 @@ export class BitcoinCoreProvider
                 // One write transaction per run of blocks. Committing each
                 // block separately re-walks and rewrites the same B+tree
                 // interior pages every time; batching amortises them.
-                const batchEnd = Math.min(
-                    height + this.commitBatchBlocks - 1,
+                // Clamped to a partition boundary, so a batch is never split
+                // across two environments. That is what bounds crash recovery
+                // to the single partition holding the first unindexed height.
+                const batchEnd = this.partitionManager.clampBatchEnd(
+                    height,
+                    this.commitBatchBlocks,
                     tipHeight,
                 );
                 const timer = new BlockTimer();
@@ -153,22 +178,11 @@ export class BitcoinCoreProvider
 
                 await this.dbTransactionService.execute(
                     async (batch) => {
-                        // Spans the whole batch, not one block: an output
-                        // created in one block and spent in a later block of
-                        // the same batch is not committed yet, so the spend can
-                        // only be resolved from here.
-                        const pendingOutputs = new Map<
-                            string,
-                            { pubKey: string; value: number }
-                        >();
-
                         for (let h = height; h <= batchEnd; h++) {
                             const { transactions, blockHash, blockTime } =
                                 await timer.measureAsync('processBlock', () =>
                                     this.processBlock(h, verbosityLevel),
                                 );
-
-                            const spentOutpoints: [string, number][] = [];
 
                             for (const transaction of transactions) {
                                 const {
@@ -181,51 +195,18 @@ export class BitcoinCoreProvider
                                 timer.count('numTx');
                                 timer.count('numInputs', vin.length);
                                 timer.count('numOutputs', vout.length);
-                                const saved = await timer.measureAsync(
-                                    'index',
-                                    () =>
-                                        this.indexTransaction(
-                                            txid,
-                                            vin,
-                                            vout,
-                                            blockHeight,
-                                            txBlockHash,
-                                            blockTime,
-                                            batch,
-                                        ),
-                                );
-
-                                for (const [k, v] of saved) {
-                                    pendingOutputs.set(k, v);
-                                }
-
-                                for (const input of vin) {
-                                    // Only a P2TR prevout can have an `out:`
-                                    // record, so anything else is a guaranteed
-                                    // miss. Skipping it avoids a full B+tree
-                                    // descent per input.
-                                    if (!isP2TR(input.prevOutScript)) {
-                                        timer.count('skipped');
-                                        continue;
-                                    }
-                                    spentOutpoints.push([
-                                        input.txid,
-                                        input.vout,
-                                    ]);
-                                }
-                            }
-
-                            const spendStats = await timer.measureAsync(
-                                'markSpent',
-                                () =>
-                                    this.storageService.markOutputsSpent(
+                                await timer.measureAsync('index', () =>
+                                    this.indexTransaction(
+                                        txid,
+                                        vin,
+                                        vout,
+                                        blockHeight,
+                                        txBlockHash,
+                                        blockTime,
                                         batch,
-                                        spentOutpoints,
-                                        pendingOutputs,
                                     ),
-                            );
-                            timer.count('probes', spendStats.probes);
-                            timer.count('hits', spendStats.hits);
+                                );
+                            }
 
                             // Written per block, not once per batch: traceReorg
                             // walks block state one height at a time, so every
@@ -249,16 +230,15 @@ export class BitcoinCoreProvider
                 const blocks = indexedHeights.length;
                 this.logger.debug(
                     `blocks=${height}-${batchEnd} (${blocks}) ` +
+                        `part=${this.partitionManager.partitionIndex(
+                            height,
+                        )} ` +
                         `tx=${counts.numTx ?? 0} ` +
                         `in=${counts.numInputs ?? 0} out=${
                             counts.numOutputs ?? 0
                         } | ` +
                         `processBlock=${phasesMs.processBlock ?? 0}ms ` +
                         `index=${phasesMs.index ?? 0}ms ` +
-                        `markSpent=${phasesMs.markSpent ?? 0}ms ` +
-                        `(probes=${counts.probes ?? 0} hits=${
-                            counts.hits ?? 0
-                        } skipped=${counts.skipped ?? 0}) ` +
                         `commit=${phasesMs.commit ?? 0}ms ` +
                         `total=${totalMs}ms ` +
                         `perBlock=${(totalMs / blocks).toFixed(1)}ms`,
@@ -284,6 +264,17 @@ export class BitcoinCoreProvider
         });
     }
 
+    /**
+     * The node cannot change version without a restart, so this is resolved
+     * once rather than on every sync tick and every txid lookup.
+     */
+    private async getNodeVersion(): Promise<number> {
+        if (this.nodeVersion === null) {
+            this.nodeVersion = (await this.getNetworkInfo()).version;
+        }
+        return this.nodeVersion;
+    }
+
     private async getTipHeight(): Promise<number> {
         return this.request({
             method: 'getblockcount',
@@ -307,12 +298,64 @@ export class BitcoinCoreProvider
 
     private async getRawTransaction(
         txid: string,
-        isVerbose: boolean,
+        verbosity: boolean | number,
     ): Promise<BlockTransaction> {
         return this.request({
             method: 'getrawtransaction',
-            params: [txid, isVerbose],
+            params: [txid, verbosity],
         });
+    }
+
+    private async getBlockHeader(hash: string): Promise<BlockHeader> {
+        return this.request({
+            method: 'getblockheader',
+            params: [hash],
+        });
+    }
+
+    protected async fetchTransactionForTweak(
+        txid: string,
+    ): Promise<ProviderTransaction | null> {
+        const version = await this.getNodeVersion();
+        // Verbosity 2 embeds `vin[].prevout` in one call. Below Core 25 it is
+        // not accepted, so ask for the plain verbose form and let
+        // parseTransactionInput resolve each prevout itself.
+        let tx: BlockTransaction;
+        try {
+            tx = await this.getRawTransaction(
+                txid,
+                version >= BITCOIN_CORE_PREVOUT_RAWTX_VERSION ? 2 : true,
+            );
+        } catch (error) {
+            // Core answers an unknown txid with an HTTP 500 carrying
+            // RPC_INVALID_ADDRESS_OR_KEY, which makeRequest rethrows as-is.
+            // Left unhandled it would surface as a 500 from a route whose
+            // caller means to return 404.
+            if (isUnknownTransactionError(error)) return null;
+            throw error;
+        }
+
+        // Prevouts come from block undo data, so an unconfirmed transaction
+        // cannot be tweaked.
+        if (!tx?.blockhash) return null;
+
+        // A coinbase has no prevout to derive an input pubkey from; the block
+        // indexer skips it for the same reason (processBlock starts at i = 1).
+        if (tx.vin.some((input) => input.coinbase !== undefined)) return null;
+
+        // Height is absent from the getrawtransaction payload at every
+        // verbosity. Deriving it from `confirmations` would race the tip.
+        const header = await this.getBlockHeader(tx.blockhash);
+
+        return {
+            vin: await Promise.all(
+                tx.vin.map(this.parseTransactionInput, this),
+            ),
+            vout: tx.vout.map(this.parseTransactionOutput, this),
+            blockHeight: header.height,
+            blockHash: tx.blockhash,
+            blockTime: header.time,
+        };
     }
 
     public async processBlock(

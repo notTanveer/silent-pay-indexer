@@ -1,36 +1,63 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { StorageService } from '@/storage/storage.service';
+import { PartitionManager } from '@/storage/partition-manager';
+import { BatchWriter } from '@/storage/batch-writer';
 import { TransactionData } from '@/storage/interfaces';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
 const txid = (n: number) => n.toString(16).padStart(64, '0');
+const hash = (n: number) => n.toString(16).padStart(64, 'f');
 const pubKey = (n: number) => n.toString(16).padStart(64, 'a');
 
 const makeTx = (
     id: string,
     outputs: { vout: number; value: number }[],
     blockHeight = 100,
+    blockHash = hash(999),
+    blockTime = 1_700_000_000,
 ): TransactionData => ({
     id,
     blockHeight,
-    blockHash: txid(999),
-    blockTime: 1_700_000_000,
+    blockHash,
+    blockTime,
     scanTweak: '02'.padEnd(66, 'b'),
     outputs: outputs.map((o) => ({
         transactionId: id,
         vout: o.vout,
         pubKey: pubKey(o.vout),
         value: o.value,
-        isSpent: false,
     })),
 });
 
 describe('StorageService', () => {
     let storage: StorageService;
+    let partitions: PartitionManager;
     let tmpDir: string;
+
+    const save = async (...txs: TransactionData[]) => {
+        const batch = storage.createBatch();
+        const blocks = new Map<number, string>();
+        for (const tx of txs) {
+            storage.saveTransaction(batch, tx);
+            blocks.set(tx.blockHeight, tx.blockHash);
+        }
+        // Indexing always records block state alongside a block's
+        // transactions, and that is what populates the hash index.
+        for (const [blockHeight, blockHash] of blocks) {
+            storage.saveBlockState(batch, { blockHeight, blockHash });
+        }
+        await batch.commit();
+    };
+
+    // Transactions are only reachable through a block, so every read-back goes
+    // via the height index rather than a txid lookup.
+    const findTx = async (height: number, id: string) =>
+        (await storage.getTransactionsByBlockHeight(height)).find(
+            (t) => t.id === id,
+        ) ?? null;
 
     beforeEach(async () => {
         tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'storage-test-'));
@@ -38,172 +65,473 @@ describe('StorageService', () => {
         const module: TestingModule = await Test.createTestingModule({
             providers: [
                 StorageService,
+                PartitionManager,
                 {
                     provide: ConfigService,
                     useValue: {
-                        get: (key: string) =>
-                            key === 'db.path' ? tmpDir : null,
+                        get: (key: string) => {
+                            if (key === 'db.path') return tmpDir;
+                            // Small partitions so tests cross boundaries.
+                            if (key === 'db.partitionBlocks') return 5;
+                            if (key === 'db.partitionMapSize')
+                                return 16 * 1024 * 1024;
+                            if (key === 'db.mapSize') return 16 * 1024 * 1024;
+                            if (key === 'db.openPartitions') return 2;
+                            return null;
+                        },
                     },
                 },
             ],
         }).compile();
 
+        partitions = module.get<PartitionManager>(PartitionManager);
+        partitions.onModuleInit();
         storage = module.get<StorageService>(StorageService);
-        await storage.onModuleInit();
     });
 
     afterEach(async () => {
-        await storage.onModuleDestroy();
+        await partitions.onModuleDestroy();
         fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    describe('markOutputsSpent', () => {
-        it('marks a committed output spent and reports the probe as a hit', async () => {
-            const commit = storage.createBatch();
-            storage.saveTransaction(
-                commit,
-                makeTx(txid(1), [{ vout: 0, value: 500 }]),
-            );
-            await commit.commit();
-
-            const batch = storage.createBatch();
-            const stats = await storage.markOutputsSpent(batch, [[txid(1), 0]]);
-            await batch.commit();
-
-            expect(stats).toEqual({ probes: 1, hits: 1 });
-            const tx = await storage.getTransactionByTxid(txid(1), false);
-            expect(tx.outputs[0].isSpent).toBe(true);
-        });
-
-        it('handles a same-block spend via pendingOutputs without probing the DB', async () => {
-            const batch = storage.createBatch();
-            const pending = storage.saveTransaction(
-                batch,
-                makeTx(txid(2), [{ vout: 0, value: 700 }]),
+    describe('transaction reads', () => {
+        it('round-trips a transaction and its outputs', async () => {
+            await save(
+                makeTx(txid(1), [
+                    { vout: 0, value: 500 },
+                    { vout: 3, value: 700 },
+                ]),
             );
 
-            // Spent by a later transaction in the same block, so the output is
-            // not committed yet and must be resolved from the pending map.
-            const stats = await storage.markOutputsSpent(
-                batch,
-                [[txid(2), 0]],
-                pending,
-            );
-            await batch.commit();
-
-            expect(stats).toEqual({ probes: 0, hits: 0 });
-            const tx = await storage.getTransactionByTxid(txid(2), false);
-            expect(tx.outputs[0].isSpent).toBe(true);
-            expect(tx.outputs[0].value).toBe(700);
-        });
-
-        it('is a no-op for outpoints that were never indexed', async () => {
-            const batch = storage.createBatch();
-            const stats = await storage.markOutputsSpent(batch, [
-                [txid(3), 0],
-                [txid(4), 7],
+            const tx = await findTx(100, txid(1));
+            expect(tx.id).toBe(txid(1));
+            expect(tx.blockHeight).toBe(100);
+            expect(tx.blockHash).toBe(hash(999));
+            expect(tx.blockTime).toBe(1_700_000_000);
+            expect(tx.outputs.map((o) => [o.vout, o.value])).toEqual([
+                [0, 500],
+                [3, 700],
             ]);
-            await batch.commit();
-
-            expect(stats).toEqual({ probes: 2, hits: 0 });
-            expect(
-                await storage.getTransactionByTxid(txid(3), false),
-            ).toBeNull();
         });
 
-        it('does not rewrite an output that is already spent', async () => {
-            const setup = storage.createBatch();
-            storage.saveTransaction(
-                setup,
-                makeTx(txid(5), [{ vout: 0, value: 900 }]),
+        it('returns nothing for an unknown txid', async () => {
+            expect(await findTx(100, txid(42))).toBeNull();
+        });
+
+        it('returns every transaction at a height, txid-ascending', async () => {
+            await save(
+                makeTx(txid(20), [{ vout: 0, value: 1 }], 500),
+                makeTx(txid(10), [{ vout: 0, value: 2 }], 500),
+                makeTx(txid(30), [{ vout: 0, value: 3 }], 501),
             );
-            await setup.commit();
 
-            const first = storage.createBatch();
-            await storage.markOutputsSpent(first, [[txid(5), 0]]);
-            await first.commit();
-
-            const second = storage.createBatch();
-            const stats = await storage.markOutputsSpent(second, [
-                [txid(5), 0],
-            ]);
-            await second.commit();
-
-            // Still found on disk (a hit), but no second write.
-            expect(stats).toEqual({ probes: 1, hits: 1 });
-            const tx = await storage.getTransactionByTxid(txid(5), false);
-            expect(tx.outputs[0].isSpent).toBe(true);
-            expect(tx.outputs[0].value).toBe(900);
+            const txs = await storage.getTransactionsByBlockHeight(500);
+            expect(txs.map((t) => t.id)).toEqual([txid(10), txid(20)]);
         });
 
-        it('resolves every outpoint regardless of the order supplied', async () => {
-            const setup = storage.createBatch();
-            for (let i = 10; i < 20; i++) {
-                storage.saveTransaction(
-                    setup,
-                    makeTx(txid(i), [{ vout: 0, value: i }]),
-                );
-            }
-            await setup.commit();
+        it('spans an inclusive height range in height order', async () => {
+            await save(
+                makeTx(txid(1), [{ vout: 0, value: 1 }], 10),
+                makeTx(txid(2), [{ vout: 0, value: 2 }], 11),
+                makeTx(txid(3), [{ vout: 0, value: 3 }], 12),
+                makeTx(txid(4), [{ vout: 0, value: 4 }], 13),
+            );
 
-            // Probing is internally sorted by encoded key; supplying the
-            // outpoints in reverse must not change the outcome.
-            const outpoints: [string, number][] = [];
-            for (let i = 19; i >= 10; i--) outpoints.push([txid(i), 0]);
+            const txs = await storage.getTransactionsByBlockHeightRange(11, 12);
+            expect(txs.map((t) => t.id)).toEqual([txid(2), txid(3)]);
+        });
 
-            const batch = storage.createBatch();
-            const stats = await storage.markOutputsSpent(batch, outpoints);
-            await batch.commit();
+        it('returns every transaction for a block hash', async () => {
+            await save(
+                makeTx(txid(1), [{ vout: 0, value: 1 }], 10, hash(1)),
+                makeTx(txid(2), [{ vout: 0, value: 2 }], 11, hash(2)),
+            );
 
-            expect(stats).toEqual({ probes: 10, hits: 10 });
-            for (let i = 10; i < 20; i++) {
-                const tx = await storage.getTransactionByTxid(txid(i), false);
-                expect(tx.outputs[0].isSpent).toBe(true);
-                expect(tx.outputs[0].value).toBe(i);
-            }
+            const txs = await storage.getTransactionsByBlockHash(hash(2));
+            expect(txs.map((t) => t.id)).toEqual([txid(2)]);
+        });
+
+        it('returns an empty list for heights and hashes with no data', async () => {
+            expect(await storage.getTransactionsByBlockHeight(7)).toEqual([]);
+            expect(await storage.getTransactionsByBlockHash(hash(7))).toEqual(
+                [],
+            );
         });
     });
 
-    describe('getOutputsForTxid', () => {
-        it('filters spent outputs from the out: scan', async () => {
-            const setup = storage.createBatch();
-            storage.saveTransaction(
-                setup,
-                makeTx(txid(30), [
-                    { vout: 0, value: 1 },
-                    { vout: 1, value: 2 },
-                    { vout: 2, value: 3 },
-                ]),
+    describe('getBlockHeightByTimestamp', () => {
+        it('finds the first block strictly after the timestamp', async () => {
+            await save(
+                makeTx(txid(1), [{ vout: 0, value: 1 }], 10, hash(1), 1000),
+                makeTx(txid(2), [{ vout: 0, value: 2 }], 11, hash(2), 2000),
             );
-            await setup.commit();
 
-            const spend = storage.createBatch();
-            await storage.markOutputsSpent(spend, [[txid(30), 1]]);
-            await spend.commit();
+            expect(await storage.getBlockHeightByTimestamp(999)).toBe(10);
+            // Strictly after: a block AT the timestamp is not a match.
+            expect(await storage.getBlockHeightByTimestamp(1000)).toBe(11);
+            expect(await storage.getBlockHeightByTimestamp(2000)).toBeNull();
+        });
+    });
 
-            const all = await storage.getTransactionByTxid(txid(30), false);
-            expect(all.outputs.map((o) => o.vout)).toEqual([0, 1, 2]);
+    describe('block state', () => {
+        it('returns the highest recorded height', async () => {
+            const batch = storage.createBatch();
+            storage.saveBlockState(batch, {
+                blockHeight: 10,
+                blockHash: hash(1),
+            });
+            storage.saveBlockState(batch, {
+                blockHeight: 12,
+                blockHash: hash(2),
+            });
+            storage.saveBlockState(batch, {
+                blockHeight: 11,
+                blockHash: hash(3),
+            });
+            await batch.commit();
 
-            const unspent = await storage.getTransactionByTxid(txid(30), true);
-            expect(unspent.outputs.map((o) => o.vout)).toEqual([0, 2]);
-            expect(unspent.outputs.every((o) => !o.isSpent)).toBe(true);
+            expect(await storage.getCurrentBlockState()).toEqual({
+                blockHeight: 12,
+                blockHash: hash(2),
+            });
         });
 
-        it('returns null once every output is spent', async () => {
-            const setup = storage.createBatch();
-            storage.saveTransaction(
-                setup,
-                makeTx(txid(31), [{ vout: 0, value: 1 }]),
-            );
-            await setup.commit();
+        it('falls back to the next-highest once the tip is deleted', async () => {
+            const batch = storage.createBatch();
+            storage.saveBlockState(batch, {
+                blockHeight: 10,
+                blockHash: hash(1),
+            });
+            storage.saveBlockState(batch, {
+                blockHeight: 11,
+                blockHash: hash(2),
+            });
+            await batch.commit();
 
-            const spend = storage.createBatch();
-            await storage.markOutputsSpent(spend, [[txid(31), 0]]);
-            await spend.commit();
+            const remove = storage.createBatch();
+            storage.deleteBlockState(remove, 11);
+            await remove.commit();
+
+            expect((await storage.getCurrentBlockState()).blockHeight).toBe(10);
+        });
+
+        it('returns null when nothing is recorded', async () => {
+            expect(await storage.getCurrentBlockState()).toBeNull();
+        });
+    });
+
+    describe('operation state', () => {
+        it('round-trips a JSON state blob', async () => {
+            const batch = storage.createBatch();
+            storage.saveOperationState(batch, 'core', {
+                indexedBlockHeight: 842579,
+            });
+            await batch.commit();
+
+            expect(await storage.getOperationState('core')).toEqual({
+                id: 'core',
+                state: { indexedBlockHeight: 842579 },
+            });
+        });
+
+        it('returns null for an unknown id', async () => {
+            expect(await storage.getOperationState('nope')).toBeNull();
+        });
+    });
+
+    describe('deleteTransactionsAtBlockHash', () => {
+        it('removes the transactions, outputs and every index for that block', async () => {
+            await save(
+                makeTx(
+                    txid(1),
+                    [
+                        { vout: 0, value: 1 },
+                        { vout: 1, value: 2 },
+                    ],
+                    10,
+                    hash(1),
+                    1000,
+                ),
+                makeTx(txid(2), [{ vout: 0, value: 3 }], 10, hash(1), 1000),
+                makeTx(txid(3), [{ vout: 0, value: 4 }], 11, hash(2), 2000),
+            );
+
+            const batch = storage.createBatch();
+            await storage.deleteTransactionsAtBlockHash(batch, hash(1));
+            await batch.commit();
+
+            expect(await findTx(10, txid(1))).toBeNull();
+            expect(await findTx(10, txid(2))).toBeNull();
+            expect(await storage.getTransactionsByBlockHeight(10)).toEqual([]);
+            expect(await storage.getTransactionsByBlockHash(hash(1))).toEqual(
+                [],
+            );
+            // The time index for the deleted block is gone, so the next block
+            // after that timestamp is now block 11.
+            expect(await storage.getBlockHeightByTimestamp(999)).toBe(11);
+
+            // The untouched block survives intact.
+            const survivors = await storage.getTransactionsByBlockHeight(11);
+            expect(survivors.map((t) => t.id)).toEqual([txid(3)]);
+        });
+
+        it('is a no-op for a block hash that was never indexed', async () => {
+            await save(makeTx(txid(1), [{ vout: 0, value: 1 }], 10, hash(1)));
+
+            const batch = storage.createBatch();
+            await storage.deleteTransactionsAtBlockHash(batch, hash(5));
+            await batch.commit();
+
+            expect(await findTx(10, txid(1))).not.toBeNull();
+        });
+    });
+
+    describe('partitioning', () => {
+        // The spec runs with db.partitionBlocks = 5.
+
+        it('reads a range that spans several partitions in height order', async () => {
+            await save(
+                ...Array.from({ length: 12 }, (_, i) =>
+                    makeTx(txid(i + 1), [{ vout: 0, value: i }], 3 + i),
+                ),
+            );
+
+            const txs = await storage.getTransactionsByBlockHeightRange(4, 13);
+
+            expect(txs.map((t) => t.blockHeight)).toEqual([
+                4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+            ]);
+        });
+
+        it('keeps a block reachable by hash across a partition boundary', async () => {
+            await save(
+                makeTx(txid(1), [{ vout: 0, value: 1 }], 9, hash(1)),
+                makeTx(txid(2), [{ vout: 0, value: 2 }], 10, hash(2)),
+            );
+
+            expect(await storage.getHeightForBlockHash(hash(1))).toBe(9);
+            expect(await storage.getHeightForBlockHash(hash(2))).toBe(10);
+            expect(await storage.getHeightForBlockHash(hash(3))).toBeNull();
+
+            const across = await storage.getTransactionsByBlockHash(hash(2));
+            expect(across.map((t) => t.id)).toEqual([txid(2)]);
+        });
+
+        it('deletes from the partition the block actually lives in', async () => {
+            await save(
+                makeTx(txid(1), [{ vout: 0, value: 1 }], 9, hash(1)),
+                makeTx(txid(2), [{ vout: 0, value: 2 }], 10, hash(2)),
+            );
+
+            const batch = storage.createBatch();
+            await storage.deleteTransactionsAtBlockHash(batch, hash(2));
+            await batch.commit();
+
+            expect(await storage.getTransactionsByBlockHeight(10)).toEqual([]);
+            expect(await storage.getHeightForBlockHash(hash(2))).toBeNull();
+            // The neighbouring partition is untouched.
+            expect(
+                (await storage.getTransactionsByBlockHeight(9)).map(
+                    (t) => t.id,
+                ),
+            ).toEqual([txid(1)]);
+        });
+    });
+
+    describe('reorg across a partition boundary', () => {
+        it('unwinds height by height into whichever partition owns each', async () => {
+            // Heights 8 and 9 are in partition 1, height 10 starts partition 2.
+            await save(
+                makeTx(txid(1), [{ vout: 0, value: 1 }], 8, hash(1), 800),
+                makeTx(txid(2), [{ vout: 0, value: 2 }], 9, hash(2), 900),
+                makeTx(txid(3), [{ vout: 0, value: 3 }], 10, hash(3), 1000),
+            );
+
+            // traceReorg walks back one height at a time, each in its own
+            // batch, so the rollback crosses the boundary between 10 and 9.
+            for (const blockHash of [hash(3), hash(2)]) {
+                const batch = storage.createBatch();
+                await storage.deleteTransactionsAtBlockHash(batch, blockHash);
+                storage.deleteBlockState(batch, blockHash === hash(3) ? 10 : 9);
+                await batch.commit();
+            }
+
+            expect(await storage.getTransactionsByBlockHeight(10)).toEqual([]);
+            expect(await storage.getTransactionsByBlockHeight(9)).toEqual([]);
+            expect(await storage.getHeightForBlockHash(hash(3))).toBeNull();
+            expect(await storage.getHeightForBlockHash(hash(2))).toBeNull();
+            expect((await storage.getCurrentBlockState()).blockHeight).toBe(8);
+
+            // The block below the rollback survives, in the same partition one
+            // of the deleted blocks came from.
+            expect(
+                (await storage.getTransactionsByBlockHeight(8)).map(
+                    (t) => t.id,
+                ),
+            ).toEqual([txid(1)]);
+        });
+
+        it('is idempotent, so a crash mid-unwind converges on retry', async () => {
+            await save(makeTx(txid(1), [{ vout: 0, value: 1 }], 10, hash(1)));
+
+            for (let attempt = 0; attempt < 2; attempt++) {
+                const batch = storage.createBatch();
+                await storage.deleteTransactionsAtBlockHash(batch, hash(1));
+                await batch.commit();
+            }
+
+            expect(await storage.getTransactionsByBlockHeight(10)).toEqual([]);
+        });
+    });
+
+    describe('purgeAboveHeight', () => {
+        it('drops blocks left above the recorded tip by a partial commit', async () => {
+            await save(
+                makeTx(txid(1), [{ vout: 0, value: 1 }], 10, hash(1), 1000),
+                // Committed to the partition, but the crash hit before block
+                // state was written, so nothing claims these heights.
+                makeTx(txid(2), [{ vout: 0, value: 2 }], 11, hash(2), 2000),
+                makeTx(txid(3), [{ vout: 0, value: 3 }], 12, hash(3), 3000),
+            );
+
+            const batch = storage.createBatch();
+            storage.purgeAboveHeight(batch, 10);
+            await batch.commit();
+
+            expect(await storage.getTransactionsByBlockHeight(11)).toEqual([]);
+            expect(await storage.getTransactionsByBlockHeight(12)).toEqual([]);
+            // The time index entries went with them.
+            expect(await storage.getBlockHeightByTimestamp(1500)).toBeNull();
+            // Everything at or below the tip is untouched.
+            expect(
+                (await storage.getTransactionsByBlockHeight(10)).map(
+                    (t) => t.id,
+                ),
+            ).toEqual([txid(1)]);
+        });
+
+        it('is a no-op when nothing was written above the tip', async () => {
+            await save(makeTx(txid(1), [{ vout: 0, value: 1 }], 10, hash(1)));
+
+            const batch = storage.createBatch();
+            storage.purgeAboveHeight(batch, 10);
+            await batch.commit();
 
             expect(
-                await storage.getTransactionByTxid(txid(31), true),
-            ).toBeNull();
+                (await storage.getTransactionsByBlockHeight(10)).map(
+                    (t) => t.id,
+                ),
+            ).toEqual([txid(1)]);
+        });
+    });
+
+    describe('write amplification', () => {
+        // The timestamp index is keyed by (blockTime, blockHeight), so it is
+        // one entry per block — but saveTransaction derives it once per
+        // transaction, into the global environment the partitioning is meant
+        // to keep small.
+        const timeIndexKeys = () => {
+            const lease = partitions.acquireGlobal();
+            try {
+                return [
+                    ...lease.db.getRange({
+                        start: Buffer.from('idx:bt:'),
+                        end: Buffer.from('idx:bt;'),
+                    }),
+                ].length;
+            } finally {
+                lease.release();
+            }
+        };
+
+        it('writes one timestamp-index entry per block, not per transaction', async () => {
+            await save(
+                makeTx(txid(1), [{ vout: 0, value: 1 }], 9),
+                makeTx(txid(2), [{ vout: 0, value: 2 }], 9),
+                makeTx(txid(3), [{ vout: 0, value: 3 }], 9),
+                makeTx(txid(4), [{ vout: 0, value: 4 }], 10),
+            );
+
+            expect(timeIndexKeys()).toBe(2);
+        });
+
+        it('clears the timestamp index when the block is deleted', async () => {
+            await save(
+                makeTx(txid(1), [{ vout: 0, value: 1 }], 9, hash(1)),
+                makeTx(txid(2), [{ vout: 0, value: 2 }], 9, hash(1)),
+            );
+            expect(timeIndexKeys()).toBe(1);
+
+            const batch = storage.createBatch();
+            await storage.deleteTransactionsAtBlockHash(batch, hash(1));
+            await batch.commit();
+
+            expect(timeIndexKeys()).toBe(0);
+        });
+    });
+
+    describe('environment leases', () => {
+        // saveTransaction acquires a partition and the global environment per
+        // transaction and hands both to the batch, which is responsible for
+        // releasing the surplus. A miss there pins an environment for the life
+        // of the process and the LRU silently exceeds its cap.
+        const writeThreeBlocksAcrossTwoPartitions = (batch: BatchWriter) => {
+            storage.saveTransaction(
+                batch,
+                makeTx(txid(1), [{ vout: 0, value: 1 }], 0),
+            );
+            storage.saveTransaction(
+                batch,
+                makeTx(txid(2), [{ vout: 0, value: 2 }], 1),
+            );
+            storage.saveTransaction(
+                batch,
+                makeTx(txid(3), [{ vout: 0, value: 3 }], 9),
+            );
+            storage.saveBlockState(batch, {
+                blockHeight: 9,
+                blockHash: hash(1),
+            });
+        };
+
+        it('releases every environment a committed write batch touched', async () => {
+            const batch = storage.createBatch();
+            writeThreeBlocksAcrossTwoPartitions(batch);
+            expect(partitions.leasedCount).toBeGreaterThan(0);
+
+            await batch.commit();
+
+            expect(partitions.leasedCount).toBe(0);
+        });
+
+        it('releases every environment an abandoned batch touched', async () => {
+            const batch = storage.createBatch();
+            writeThreeBlocksAcrossTwoPartitions(batch);
+            batch.dispose();
+
+            expect(partitions.leasedCount).toBe(0);
+        });
+
+        it('releases the environments a read borrowed', async () => {
+            await save(makeTx(txid(1), [{ vout: 0, value: 1 }], 9, hash(1)));
+
+            await storage.getTransactionsByBlockHeightRange(0, 12);
+            await storage.getTransactionsByBlockHash(hash(1));
+            await storage.getCurrentBlockState();
+
+            expect(partitions.leasedCount).toBe(0);
+        });
+    });
+
+    describe('batching', () => {
+        it('writes nothing when the batch is never committed', async () => {
+            const batch = storage.createBatch();
+            storage.saveTransaction(
+                batch,
+                makeTx(txid(1), [{ vout: 0, value: 1 }]),
+            );
+
+            expect(await findTx(100, txid(1))).toBeNull();
         });
     });
 });

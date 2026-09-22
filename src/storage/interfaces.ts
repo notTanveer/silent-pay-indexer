@@ -12,7 +12,6 @@ export interface OutputData {
     vout: number;
     pubKey: string; // hex (64 chars)
     value: number; // satoshis
-    isSpent: boolean;
 }
 
 export interface BlockStateData {

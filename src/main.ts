@@ -23,6 +23,10 @@ async function bootstrap() {
 
     app.useLogger(app.get(WINSTON_MODULE_NEST_PROVIDER));
 
+    // Without this, onModuleDestroy never runs on SIGTERM and the LMDB
+    // environments are never closed on a normal service stop.
+    app.enableShutdownHooks();
+
     await app.listen(port, host);
 
     if (module.hot) {

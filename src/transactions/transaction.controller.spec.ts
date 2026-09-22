@@ -20,7 +20,6 @@ const mockTransactions: TransactionData[] = [
                 vout: 1,
                 value: 100000,
                 transactionId: '1',
-                isSpent: false,
             },
         ],
     },
@@ -38,7 +37,6 @@ const mockTransactions: TransactionData[] = [
                 vout: 2,
                 value: 100000,
                 transactionId: '2',
-                isSpent: false,
             },
         ],
     },
@@ -56,7 +54,6 @@ const mockTransactions: TransactionData[] = [
                 vout: 3,
                 value: 100000,
                 transactionId: '3',
-                isSpent: false,
             },
         ],
     },
@@ -68,10 +65,14 @@ const mockStorageService = {
         .fn()
         .mockResolvedValue(mockTransactions),
     getTransactionsByBlockHash: jest.fn().mockResolvedValue(mockTransactions),
-    getTransactionByTxid: jest.fn().mockResolvedValue(mockTransactions[0]),
     getBlockHeightByTimestamp: jest.fn(),
     createBatch: jest.fn(),
     deleteTransactionsByBlockHash: jest.fn(),
+};
+
+// Lookup by txid is derived from the chain, not read from storage.
+const mockBlockDataProvider = {
+    getTransactionForTweak: jest.fn().mockResolvedValue(mockTransactions[0]),
 };
 
 describe('TransactionController', () => {
@@ -87,6 +88,10 @@ describe('TransactionController', () => {
                 {
                     provide: StorageService,
                     useValue: mockStorageService,
+                },
+                {
+                    provide: 'BlockDataProvider',
+                    useValue: mockBlockDataProvider,
                 },
             ],
         }).compile();
@@ -109,7 +114,6 @@ describe('TransactionController', () => {
 
         expect(getTransactionByBlockHeightSpy).toHaveBeenCalledWith(
             blockHeight,
-            false,
         );
         expect(controllerResult).toEqual({ transactions: mockTransactions });
     });
@@ -127,10 +131,7 @@ describe('TransactionController', () => {
             blockHash,
         );
 
-        expect(getTransactionByBlockHashSpy).toHaveBeenCalledWith(
-            blockHash,
-            false,
-        );
+        expect(getTransactionByBlockHashSpy).toHaveBeenCalledWith(blockHash);
         expect(controllerResult).toEqual({
             transactions: mockTransactions,
         });
@@ -154,7 +155,6 @@ describe('TransactionController', () => {
         expect(getTransactionsByBlockHeightRangeSpy).toHaveBeenCalledWith(
             startHeight,
             endHeight,
-            false,
         );
         expect(controllerResult).toEqual({
             transactions: mockTransactions,
@@ -169,7 +169,10 @@ describe('TransactionController', () => {
         const txid = '1';
         const controllerResult = await controller.getTransactionByTxid(txid);
 
-        expect(getTransactionByTxidSpy).toHaveBeenCalledWith(txid, false);
+        expect(getTransactionByTxidSpy).toHaveBeenCalledWith(txid);
+        expect(
+            mockBlockDataProvider.getTransactionForTweak,
+        ).toHaveBeenCalledWith(txid);
         expect(controllerResult).toEqual({ transaction: mockTransactions[0] });
     });
 });

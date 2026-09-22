@@ -6,6 +6,7 @@ import { silentBlockEncodingFixture } from '@/silent-blocks/silent-blocks.servic
 import { SilentBlocksGateway } from '@/silent-blocks/silent-blocks.gateway';
 import { BlockStateService } from '@/block-state/block-state.service';
 import { StorageService } from '@/storage/storage.service';
+import { PartitionManager } from '@/storage/partition-manager';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -14,6 +15,7 @@ import * as os from 'os';
 describe('SilentBlocksService', () => {
     let service: SilentBlocksService;
     let storageService: StorageService;
+    let partitions: PartitionManager;
     let tmpDir: string;
 
     beforeEach(async () => {
@@ -25,14 +27,25 @@ describe('SilentBlocksService', () => {
                 SilentBlocksService,
                 TransactionsService,
                 StorageService,
+                PartitionManager,
                 {
                     provide: ConfigService,
                     useValue: {
                         get: (key: string) => {
                             if (key === 'db.path') return tmpDir;
+                            // Small partitions so tests cross boundaries.
+                            if (key === 'db.partitionBlocks') return 5;
+                            if (key === 'db.partitionMapSize')
+                                return 16 * 1024 * 1024;
+                            if (key === 'db.mapSize') return 16 * 1024 * 1024;
+                            if (key === 'db.openPartitions') return 2;
                             return null;
                         },
                     },
+                },
+                {
+                    provide: 'BlockDataProvider',
+                    useValue: { getTransactionForTweak: jest.fn() },
                 },
                 {
                     provide: SilentBlocksGateway,
@@ -47,8 +60,9 @@ describe('SilentBlocksService', () => {
             ],
         }).compile();
 
+        partitions = module.get<PartitionManager>(PartitionManager);
+        partitions.onModuleInit();
         storageService = module.get<StorageService>(StorageService);
-        await storageService.onModuleInit();
         service = module.get<SilentBlocksService>(SilentBlocksService);
     });
 
@@ -70,11 +84,16 @@ describe('SilentBlocksService', () => {
                     })),
                 });
             }
+            // A block hash resolves to a height through the global index,
+            // which block state owns.
+            storageService.saveBlockState(batch, {
+                blockHeight: transactions[0].blockHeight,
+                blockHash: transactions[0].blockHash,
+            });
             await batch.commit();
 
             const encodedBlock = await service.getSilentBlockByHeight(
                 blockHeight,
-                false,
             );
 
             expect(encodedBlock.toString('hex')).toEqual(encodedBlockHex);
@@ -94,64 +113,22 @@ describe('SilentBlocksService', () => {
                     })),
                 });
             }
+            // A block hash resolves to a height through the global index,
+            // which block state owns.
+            storageService.saveBlockState(batch, {
+                blockHeight: transactions[0].blockHeight,
+                blockHash: transactions[0].blockHash,
+            });
             await batch.commit();
 
-            const encodedBlock = await service.getSilentBlockByHash(
-                blockHash,
-                false,
-            );
+            const encodedBlock = await service.getSilentBlockByHash(blockHash);
 
             expect(encodedBlock.toString('hex')).toEqual(encodedBlockHex);
         },
     );
 
-    it('should omit spent Outputs if filterSpent is set to true', async () => {
-        const fixture = silentBlockEncodingFixture[0];
-
-        // Save initial transactions
-        const batch = storageService.createBatch();
-        for (const tx of fixture.transactions) {
-            storageService.saveTransaction(batch, {
-                ...tx,
-                outputs: tx.outputs.map((o) => ({
-                    ...o,
-                    transactionId: tx.id,
-                })),
-            });
-        }
-        await batch.commit();
-
-        // Fetch and verify filtered outputs
-        let encodedBlock = await service.getSilentBlockByHash(
-            fixture.blockHash,
-            true,
-        );
-
-        expect(encodedBlock.toString('hex')).toEqual(
-            fixture.filteredOutputEncodedBlockHex,
-        );
-
-        // Mark all outputs as spent
-        const spentBatch = storageService.createBatch();
-        const allOutpoints: [string, number][] = [];
-        for (const tx of fixture.transactions) {
-            for (const out of tx.outputs) {
-                allOutpoints.push([tx.id, out.vout]);
-            }
-        }
-        await storageService.markOutputsSpent(spentBatch, allOutpoints);
-        await spentBatch.commit();
-
-        encodedBlock = await service.getSilentBlockByHash(
-            fixture.blockHash,
-            true,
-        );
-
-        expect(encodedBlock.toString('hex')).toEqual('0000');
-    });
-
     afterEach(async () => {
-        await storageService.onModuleDestroy();
+        await partitions.onModuleDestroy();
         fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 });

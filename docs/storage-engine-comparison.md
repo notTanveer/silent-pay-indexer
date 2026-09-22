@@ -7,10 +7,10 @@ This document explains why LMDB was chosen as the storage engine for the silent 
 The indexer has a specific access profile that heavily influences the storage engine choice:
 
 1. **Write-heavy, append-mostly** - scanning the blockchain from taproot activation (~block 709,632) forward, ingesting every block's P2TR transactions atomically via batch writes
-2. **Binary key-value data** - transactions (73 bytes), outputs (41 bytes), and several empty-value indexes, all prefix-encoded
-3. **Range scans by sorted key** - `idx:h:<height>`, `idx:bt:<timestamp>`, `idx:us:<txid>:<vout>` - core read patterns are ordered iteration over contiguous key ranges
-4. **Point lookups** - `tx:<txid>` for single transaction fetches
-5. **Atomic batches** - every block is committed as one atomic transaction (all txns + outputs + indexes + state), with rollback on failure
+2. **Binary key-value data** - transactions (73 bytes), outputs (40 bytes), and several empty-value indexes, all prefix-encoded
+3. **Range scans by sorted key** - `idx:h:<height>`, `idx:bt:<timestamp>` - core read patterns are ordered iteration over contiguous key ranges
+4. **Point lookups** - `tx:<txid>` within a known partition, `idx:bh:<hash>` for hash-to-height
+5. **Atomic batches** - a run of blocks is committed as one atomic transaction per environment (all txns + outputs + indexes + state), with rollback on failure
 6. **No relational joins** - outputs are always fetched by txid prefix scan, not via SQL joins
 
 ## Why LMDB
@@ -21,7 +21,7 @@ LMDB is a **memory-mapped B+ tree** database with properties that align well wit
 - **Efficient range scans on sorted keys**: the prefix-based key scheme (`idx:h:<height>:<txid>`) maps directly to LMDB's B+ tree sorted-order iteration. Range scans like "all txns at height X" are a single seek + forward iteration.
 - **Atomic transactions**: native MVCC with copy-on-write. All puts and deletes in a transaction are atomic — either all apply or none do. Readers never block writers and vice versa.
 - **Zero write amplification**: unlike LSM-tree databases, LMDB has no background compaction that rewrites data. Once written, data is not rewritten until updated. This means predictable, consistent performance with no compaction stalls.
-- **Built-in LZ4 compression** (via lmdb-js): ~5 GB/s decompression throughput, applied transparently.
+- **Multiple independent environments**: storage is partitioned by block height into one environment per 1000 blocks, plus a global environment. Writes only touch the partition being indexed, so per-block cost stays flat as the chain grows instead of degrading with database size. The width is stamped into the global environment on first run and verified on every later one, since it determines where every record lives. See `PartitionManager`.
 - **Embeddable, no server process**: runs in-process, no network round-trips, no connection pooling, no separate daemon to manage.
 - **Prebuilt binaries**: the `lmdb` npm package ships prebuilt native addons for all major platforms (Linux, macOS, Windows, ARM). No C++ compilation required at install time, simplifying CI and Docker builds.
 - **Actively maintained**: 4.2M weekly downloads, used in production by Parcel, Elasticsearch Kibana, and HarperDB. Latest release April 2025.
@@ -41,7 +41,7 @@ During initial chain sync (bulk ingestion of thousands of blocks), LSM-tree engi
 | **Read throughput** | B-tree index lookups are efficient, but add SQL parsing, plan generation, type conversion | Direct memory-mapped B+ tree lookup, ~0.5μs, zero overhead |
 | **Write throughput** | WAL mode helps, but still B-tree page splits on every insert; single-writer lock | Batched async writes on worker threads, ~1.7M ops/sec |
 | **Range scans** | B-tree index range scans are efficient, but rows are stored as text/blob with SQL parsing overhead | Direct sorted-byte iteration, zero SQL parsing, zero type marshalling |
-| **Storage size** | No built-in compression; txids and scanTweaks stored as hex strings | LZ4 compression, binary keys/values, significantly smaller |
+| **Storage size** | No built-in compression; txids and scanTweaks stored as hex strings | Binary keys/values, significantly smaller |
 | **Atomic batches** | `BEGIN/COMMIT` transactions work, but TypeORM added significant overhead | Native MVCC transactions, no ORM layer |
 | **Binary data** | Blobs are supported but awkward; 32-byte hashes were stored as 64-char hex strings | Native binary keys and values, 32-byte txid is 32 bytes |
 | **Operational** | Single file, easy backups | Directory of data files, but still embedded, no server |
@@ -58,7 +58,7 @@ RocksDB was initially considered for its LSM-tree write performance, but the Nod
 | **Read throughput** | Must check multiple LSM levels; reads go through block cache | Direct memory-mapped lookup, zero read amplification, ~0.5μs |
 | **Write amplification** | High — LSM compaction rewrites data 10-30x over its lifetime | Zero — data is written once (copy-on-write) |
 | **Space amplification** | Can use 2-3x storage during compaction | Minimal — no compaction overhead |
-| **Compression** | Snappy, LZ4, Zstd, configurable per-level | LZ4 via lmdb-js |
+| **Compression** | Snappy, LZ4, Zstd, configurable per-level | LZ4 available, deliberately off |
 | **Node.js ecosystem** | `rocksdb` npm package deprecated/discontinued | `lmdb` actively maintained, 4.2M weekly downloads, prebuilt binaries |
 | **CI/Docker** | Requires C++ toolchain (python3, make, g++) for native compilation; CI workarounds needed | Prebuilt binaries, no compilation required |
 | **Operational** | Requires tuning (write buffer size, compaction strategy, block cache) for optimal performance | Near-zero tuning; set max map size and go |
@@ -84,7 +84,7 @@ LevelDB (via `classic-level`) is a viable alternative, but its single-threaded c
 |---|---|---|
 | **Read throughput** | B-tree index scans are efficient, but add SQL parsing, plan generation, type conversion, network serialization | Direct memory-mapped lookup, zero intermediate layers |
 | **Write throughput** | B-tree inserts + WAL + MVCC overhead; fine per-block, but bottlenecks at catch-up speed | Batched writes, consistent performance |
-| **Storage** | Row-oriented with per-row overhead (~23 byte tuple header, alignment padding, TOAST) | Compact binary with compression; 73-byte tx record is literally 73 bytes |
+| **Storage** | Row-oriented with per-row overhead (~23 byte tuple header, alignment padding, TOAST) | Compact binary; a 73-byte tx record is literally 73 bytes |
 | **Query flexibility** | Full SQL, window functions, CTEs, aggregates | Key-value only, but sufficient for all 7 read patterns |
 | **Operational burden** | Separate server process, connection pooling, vacuuming, backups, monitoring | Embedded, zero ops |
 | **Concurrency** | MVCC, multiple writers, row-level locking | Single writer, multiple readers — sufficient for single-process indexer |
@@ -114,3 +114,16 @@ Cassandra is designed for distributed writes across many nodes from many writers
 | Cassandra | Excellent | Good | Good | Very High (cluster) | Wildly overkill |
 
 The indexer's access pattern — **sequential writes with prefix-ordered range scans on binary keys, no joins, single writer, read-heavy API serving** — aligns well with LMDB's strengths: zero-overhead reads, consistent write performance, atomic transactions, and zero operational burden. The `lmdb` npm package provides a mature, actively maintained binding with prebuilt binaries and built-in TypeScript types.
+
+## Why compression is off
+
+lmdb-js compresses values above a 1000-byte threshold, and every value stored here is
+well under it (0, 32, 40 or 73 bytes). The threshold is not the whole rule, though: the
+compressor also *force-compresses* any value whose first byte is `>= 250`, because that
+byte doubles as the read-side "this is compressed" marker.
+
+`out:` values begin with the first byte of an x-only public key, which is uniformly
+random, so roughly 2.3% of all outputs (6 values in 256) would take an LZ4 round-trip on
+every read and write — and come out larger than they went in. At ~1,250 outputs per block
+that is ~29 pointless round-trips per block, forever, for no space saved. Measurement
+agrees: enabling it changed the database from 546MB to 547MB with identical commit time.

@@ -1,57 +1,46 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { StorageService } from '@/storage/storage.service';
 import { TransactionData } from '@/storage/interfaces';
+import { BaseBlockDataProvider } from '@/block-data-providers/base-block-data-provider.abstract';
 
 @Injectable()
 export class TransactionsService {
-    constructor(private readonly storageService: StorageService) {}
+    constructor(
+        private readonly storageService: StorageService,
+        @Inject('BlockDataProvider')
+        private readonly blockDataProvider: BaseBlockDataProvider<unknown>,
+    ) {}
 
     async getTransactionByBlockHeight(
         blockHeight: number,
-        filterSpent: boolean,
     ): Promise<TransactionData[]> {
-        return this.storageService.getTransactionsByBlockHeight(
-            blockHeight,
-            filterSpent,
-        );
+        return this.storageService.getTransactionsByBlockHeight(blockHeight);
     }
 
     async getTransactionsByBlockHeightRange(
         startHeight: number,
         endHeight: number,
-        filterSpent: boolean,
     ): Promise<TransactionData[]> {
         return this.storageService.getTransactionsByBlockHeightRange(
             startHeight,
             endHeight,
-            filterSpent,
         );
     }
 
     async getTransactionByBlockHash(
         blockHash: string,
-        filterSpent: boolean,
     ): Promise<TransactionData[]> {
-        return this.storageService.getTransactionsByBlockHash(
-            blockHash,
-            filterSpent,
-        );
+        return this.storageService.getTransactionsByBlockHash(blockHash);
     }
 
-    async getTransactionByTxid(
-        txid: string,
-        filterSpent: boolean,
-    ): Promise<TransactionData | null> {
-        return this.storageService.getTransactionByTxid(txid, filterSpent);
-    }
-
-    async deleteTransactionByBlockHash(blockHash: string): Promise<void> {
-        const batch = this.storageService.createBatch();
-        await this.storageService.deleteTransactionsByBlockHash(
-            batch,
-            blockHash,
-        );
-        await batch.commit();
+    /**
+     * Derived live from the chain rather than read from storage: `tx:` records
+     * are reachable only through a block height, and a txid does not carry
+     * one. Recomputing is exact, since the scan tweak is a pure function of
+     * the transaction and its prevouts.
+     */
+    async getTransactionByTxid(txid: string): Promise<TransactionData | null> {
+        return this.blockDataProvider.getTransactionForTweak(txid);
     }
 
     async getBlockHeightByTimestamp(

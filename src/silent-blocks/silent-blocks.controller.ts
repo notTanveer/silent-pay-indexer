@@ -3,8 +3,7 @@ import {
     Controller,
     Get,
     Param,
-    ParseBoolPipe,
-    Query,
+    ParseIntPipe,
     Res,
     UseInterceptors,
 } from '@nestjs/common';
@@ -18,14 +17,11 @@ export class SilentBlocksController {
     @Get('height/:height')
     @UseInterceptors(CacheInterceptor)
     async getSilentBlockByHeight(
-        @Param('height') blockHeight: number,
+        @Param('height', ParseIntPipe) blockHeight: number,
         @Res() res: Response,
-        @Query('filterSpent', new ParseBoolPipe({ optional: true }))
-        filterSpent = false,
     ) {
         const buffer = await this.silentBlocksService.getSilentBlockByHeight(
             blockHeight,
-            filterSpent,
         );
 
         res.set({
@@ -40,12 +36,9 @@ export class SilentBlocksController {
     async getSilentBlockByHash(
         @Param('hash') blockHash: string,
         @Res() res: Response,
-        @Query('filterSpent', new ParseBoolPipe({ optional: true }))
-        filterSpent = false,
     ) {
         const buffer = await this.silentBlocksService.getSilentBlockByHash(
             blockHash,
-            filterSpent,
         );
 
         res.set({

@@ -40,31 +40,57 @@ export class IndexerService {
         blockHash: string,
         blockTime: number,
         batch: BatchWriter,
-    ): Promise<Map<string, { pubKey: string; value: number }>> {
+    ): Promise<void> {
+        const transaction = this.buildTransactionData(
+            txid,
+            vin,
+            vout,
+            blockHeight,
+            blockHash,
+            blockTime,
+        );
+        if (transaction === null) return;
+
+        this.storageService.saveTransaction(batch, transaction);
+    }
+
+    /**
+     * Derives the stored record for a transaction, or null if it is not an
+     * eligible silent-payment transaction.
+     *
+     * Shared by the block-indexing path and the live txid lookup so that a
+     * record derived on demand is bit-identical to the one that was stored:
+     * the scan tweak is a pure function of the transaction and its prevouts,
+     * but only if both callers compute it the same way.
+     */
+    public buildTransactionData(
+        txid: string,
+        vin: TransactionInput[],
+        vout: TransactionOutput[],
+        blockHeight: number,
+        blockHash: string,
+        blockTime: number,
+    ): TransactionData | null {
         const scanResult = this.deriveOutputsAndComputeScanTweak(vin, vout);
-        if (scanResult !== null) {
-            const { scanTweak, eligibleOutputs } = scanResult;
+        if (scanResult === null) return null;
 
-            const outputs: OutputData[] = eligibleOutputs.map((out) => ({
-                transactionId: txid,
-                vout: out.vout,
-                pubKey: out.pubKey,
-                value: out.value,
-                isSpent: false,
-            }));
+        const { scanTweak, eligibleOutputs } = scanResult;
 
-            const transaction: TransactionData = {
-                id: txid,
-                blockHeight,
-                blockHash,
-                blockTime,
-                scanTweak: scanTweak.toString('hex'),
-                outputs,
-            };
+        const outputs: OutputData[] = eligibleOutputs.map((out) => ({
+            transactionId: txid,
+            vout: out.vout,
+            pubKey: out.pubKey,
+            value: out.value,
+        }));
 
-            return this.storageService.saveTransaction(batch, transaction);
-        }
-        return new Map();
+        return {
+            id: txid,
+            blockHeight,
+            blockHash,
+            blockTime,
+            scanTweak: scanTweak.toString('hex'),
+            outputs,
+        };
     }
 
     public deriveOutputsAndComputeScanTweak(

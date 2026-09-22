@@ -14,5 +14,4 @@ export class TransactionOutput {
     vout: number;
     pubKey: string; // hex (64 chars)
     value: number; // satoshis
-    isSpent: boolean;
 }

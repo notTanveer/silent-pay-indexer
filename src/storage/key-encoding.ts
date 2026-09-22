@@ -1,8 +1,13 @@
 // Key prefixes for namespace separation in LMDB.
-// NOTE: 'idx:us:' was a per-txid unspent index, retired because the isSpent
-// byte in the `out:` value is authoritative. Databases written before that
-// change may still contain 'idx:us:' keys; nothing reads them. Do not reuse
-// that prefix for anything else.
+//
+// NOTE: 'idx:us:' was a per-txid unspent index, retired along with the isSpent
+// byte it mirrored. Do not reuse that prefix for anything else.
+//
+// NOTE: 'idx:bh:' changed meaning when storage was partitioned. It used to be
+// one empty-valued `idx:bh:<hash><txid>` key per transaction; it is now one
+// `idx:bh:<hash> -> height` entry per block, living in the global environment.
+// The old form is not readable as the new one, which is part of why the
+// partitioned layout needs a reindex rather than a migration.
 const PREFIX = {
     TX: Buffer.from('tx:'),
     OUTPUT: Buffer.from('out:'),
@@ -11,7 +16,20 @@ const PREFIX = {
     TIME_IDX: Buffer.from('idx:bt:'),
     BLOCK_STATE: Buffer.from('bs:'),
     OP_STATE: Buffer.from('os:'),
+    META: Buffer.from('meta:'),
 } as const;
+
+// --- Shared scalar codec ---
+
+export function encodeUInt32(value: number): Buffer {
+    const buf = Buffer.alloc(4);
+    buf.writeUInt32BE(value);
+    return buf;
+}
+
+export function decodeUInt32(buf: Buffer): number {
+    return buf.readUInt32BE(0);
+}
 
 // --- Key encoders ---
 
@@ -20,48 +38,58 @@ export function encodeTxKey(txid: string): Buffer {
 }
 
 export function encodeOutputKey(txid: string, vout: number): Buffer {
-    const voutBuf = Buffer.alloc(4);
-    voutBuf.writeUInt32BE(vout);
-    return Buffer.concat([PREFIX.OUTPUT, Buffer.from(txid, 'hex'), voutBuf]);
+    return Buffer.concat([
+        PREFIX.OUTPUT,
+        Buffer.from(txid, 'hex'),
+        encodeUInt32(vout),
+    ]);
 }
 
 export function encodeHeightIndexKey(height: number, txid: string): Buffer {
-    const heightBuf = Buffer.alloc(4);
-    heightBuf.writeUInt32BE(height);
     return Buffer.concat([
         PREFIX.HEIGHT_IDX,
-        heightBuf,
+        encodeUInt32(height),
         Buffer.from(txid, 'hex'),
     ]);
 }
 
-export function encodeHashIndexKey(blockHash: string, txid: string): Buffer {
-    return Buffer.concat([
-        PREFIX.HASH_IDX,
-        Buffer.from(blockHash, 'hex'),
-        Buffer.from(txid, 'hex'),
-    ]);
+export function encodeHashIndexKey(blockHash: string): Buffer {
+    return Buffer.concat([PREFIX.HASH_IDX, Buffer.from(blockHash, 'hex')]);
+}
+
+export function encodeHashIndexValue(blockHeight: number): Buffer {
+    return encodeUInt32(blockHeight);
+}
+
+export function decodeHashIndexValue(buf: Buffer): number {
+    return decodeUInt32(buf);
 }
 
 export function encodeTimeIndexKey(
     blockTime: number,
     blockHeight: number,
 ): Buffer {
-    const timeBuf = Buffer.alloc(4);
-    timeBuf.writeUInt32BE(blockTime);
-    const heightBuf = Buffer.alloc(4);
-    heightBuf.writeUInt32BE(blockHeight);
-    return Buffer.concat([PREFIX.TIME_IDX, timeBuf, heightBuf]);
+    return Buffer.concat([
+        PREFIX.TIME_IDX,
+        encodeUInt32(blockTime),
+        encodeUInt32(blockHeight),
+    ]);
 }
 
 export function encodeBlockStateKey(height: number): Buffer {
-    const heightBuf = Buffer.alloc(4);
-    heightBuf.writeUInt32BE(height);
-    return Buffer.concat([PREFIX.BLOCK_STATE, heightBuf]);
+    return Buffer.concat([PREFIX.BLOCK_STATE, encodeUInt32(height)]);
 }
 
 export function encodeOpStateKey(id: string): Buffer {
     return Buffer.concat([PREFIX.OP_STATE, Buffer.from(id, 'utf8')]);
+}
+
+/**
+ * Layout facts stamped into the global environment on first open, so a later
+ * run can refuse a configuration the existing data was not written under.
+ */
+export function encodeMetaKey(name: string): Buffer {
+    return Buffer.concat([PREFIX.META, Buffer.from(name, 'utf8')]);
 }
 
 // --- Value encoders ---
@@ -101,40 +129,25 @@ export function decodeTxValue(buf: Buffer): {
     return { blockHeight, blockHash, blockTime, scanTweak };
 }
 
-export function encodeOutputValue(
-    pubKey: string,
-    value: number,
-    isSpent: boolean,
-): Buffer {
-    const buf = Buffer.alloc(41); // 32 + 8 + 1
+export function encodeOutputValue(pubKey: string, value: number): Buffer {
+    const buf = Buffer.alloc(40); // 32 + 8
     let offset = 0;
     Buffer.from(pubKey, 'hex').copy(buf, offset);
     offset += 32;
     buf.writeBigUInt64BE(BigInt(value), offset);
-    offset += 8;
-    buf.writeUInt8(isSpent ? 1 : 0, offset);
     return buf;
 }
 
 export function decodeOutputValue(buf: Buffer): {
     pubKey: string;
     value: number;
-    isSpent: boolean;
 } {
-    let offset = 0;
-    const pubKey = buf.subarray(offset, offset + 32).toString('hex');
-    offset += 32;
-    const value = Number(buf.readBigUInt64BE(offset));
-    offset += 8;
-    const isSpent = buf.readUInt8(offset) === 1;
-    return { pubKey, value, isSpent };
+    const pubKey = buf.subarray(0, 32).toString('hex');
+    const value = Number(buf.readBigUInt64BE(32));
+    return { pubKey, value };
 }
 
 // --- Key decoders ---
-
-export function decodeTxKey(key: Buffer): string {
-    return key.subarray(PREFIX.TX.length).toString('hex');
-}
 
 export function decodeOutputKey(key: Buffer): {
     txid: string;
@@ -154,16 +167,6 @@ export function decodeHeightIndexKey(key: Buffer): {
     const height = data.readUInt32BE(0);
     const txid = data.subarray(4).toString('hex');
     return { height, txid };
-}
-
-export function decodeHashIndexKey(key: Buffer): {
-    blockHash: string;
-    txid: string;
-} {
-    const data = key.subarray(PREFIX.HASH_IDX.length);
-    const blockHash = data.subarray(0, 32).toString('hex');
-    const txid = data.subarray(32).toString('hex');
-    return { blockHash, txid };
 }
 
 export function decodeTimeIndexKey(key: Buffer): {
@@ -214,44 +217,14 @@ function bigEndianIncrement(buf: Buffer): Buffer {
     );
 }
 
-/** Height index range: all txids at a single block height */
-export function singleHeightRange(height: number): {
-    gte: Buffer;
-    lt: Buffer;
-} {
-    const heightBuf = Buffer.alloc(4);
-    heightBuf.writeUInt32BE(height);
-    const gte = Buffer.concat([PREFIX.HEIGHT_IDX, heightBuf]);
-    const nextHeightBuf = Buffer.alloc(4);
-    nextHeightBuf.writeUInt32BE(height + 1);
-    const lt = Buffer.concat([PREFIX.HEIGHT_IDX, nextHeightBuf]);
-    return { gte, lt };
-}
-
 /** Height index range: all txids across a block height span [start, end] */
 export function heightSpanRange(
     startHeight: number,
     endHeight: number,
 ): { gte: Buffer; lt: Buffer } {
-    const startBuf = Buffer.alloc(4);
-    startBuf.writeUInt32BE(startHeight);
-    const endBuf = Buffer.alloc(4);
-    endBuf.writeUInt32BE(endHeight + 1);
     return {
-        gte: Buffer.concat([PREFIX.HEIGHT_IDX, startBuf]),
-        lt: Buffer.concat([PREFIX.HEIGHT_IDX, endBuf]),
-    };
-}
-
-/** Hash index range: all txids for a specific block hash */
-export function hashIndexRange(blockHash: string): {
-    gte: Buffer;
-    lt: Buffer;
-} {
-    const hashBuf = Buffer.from(blockHash, 'hex');
-    return {
-        gte: Buffer.concat([PREFIX.HASH_IDX, hashBuf]),
-        lt: Buffer.concat([PREFIX.HASH_IDX, bigEndianIncrement(hashBuf)]),
+        gte: Buffer.concat([PREFIX.HEIGHT_IDX, encodeUInt32(startHeight)]),
+        lt: Buffer.concat([PREFIX.HEIGHT_IDX, encodeUInt32(endHeight + 1)]),
     };
 }
 
@@ -280,10 +253,8 @@ export function timeIndexSeek(timestamp: number): {
     gte: Buffer;
     lt: Buffer;
 } {
-    const timeBuf = Buffer.alloc(4);
-    timeBuf.writeUInt32BE(timestamp + 1);
     return {
-        gte: Buffer.concat([PREFIX.TIME_IDX, timeBuf]),
+        gte: Buffer.concat([PREFIX.TIME_IDX, encodeUInt32(timestamp + 1)]),
         lt: prefixUpperBound(PREFIX.TIME_IDX),
     };
 }
